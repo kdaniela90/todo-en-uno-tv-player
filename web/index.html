@@ -82,6 +82,15 @@
     // ── HLS.js player bridge (usado por lib/widgets/hls_player_web.dart) ──
     window._hls = {};
 
+    // Crea el <div> contenedor del player y lo devuelve.
+    // Lo llama Flutter (dart:ui_web registerViewFactory) desde hls_player_web.dart.
+    window.hlsCreateContainer = function(viewId) {
+      var div = document.createElement('div');
+      div.id = 'hlsv-' + viewId;
+      div.style.cssText = 'position:absolute;top:0;left:0;width:100%;height:100%;background:#000;overflow:hidden;';
+      return div;
+    };
+
     window.hlsCreate = function(viewId, url, onReady, onError) {
       var container = document.getElementById('hlsv-' + viewId);
       if (!container) { setTimeout(function(){ window.hlsCreate(viewId, url, onReady, onError); }, 100); return; }

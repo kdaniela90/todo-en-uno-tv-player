@@ -1,12 +1,18 @@
 // Implementación web de HlsPlayer usando HLS.js (cargado en web/index.html).
-// Solo se compila en la plataforma web.
+// Solo se compila en la plataforma web (via exportación condicional en hls_player.dart).
+// NO usa package:web para evitar conflictos de versión — el div se crea desde JS.
 import 'dart:js_interop';
 import 'dart:ui_web' as ui_web;
 import 'package:flutter/material.dart';
-import 'package:web/web.dart' as web;
 
-// ── Interop con las funciones JS definidas en web/index.html ────────────────
+// ── Interop con funciones JS definidas en web/index.html ─────────────────────
 
+/// Crea el <div> contenedor y lo devuelve como elemento DOM nativo.
+/// El div queda con id='hlsv-<viewId>' para que hlsCreate lo encuentre.
+@JS('hlsCreateContainer')
+external JSObject _createContainer(JSString viewId);
+
+/// Inicializa HLS.js dentro del contenedor y empieza a reproducir url.
 @JS('hlsCreate')
 external void _hlsCreate(
   JSString viewId,
@@ -15,13 +21,15 @@ external void _hlsCreate(
   JSFunction? onError,
 );
 
+/// Destruye la instancia HLS.js asociada a viewId.
 @JS('hlsDestroy')
 external void _hlsDestroy(JSString viewId);
 
+/// Carga una nueva URL sin recrear el elemento de video.
 @JS('hlsLoad')
 external void _hlsLoad(JSString viewId, JSString url);
 
-// ── Widget ───────────────────────────────────────────────────────────────────
+// ── Widget ────────────────────────────────────────────────────────────────────
 
 class HlsPlayer extends StatefulWidget {
   const HlsPlayer({
@@ -40,9 +48,8 @@ class HlsPlayer extends StatefulWidget {
 }
 
 class _HlsPlayerState extends State<HlsPlayer> {
-  // ID único para este player — usado como id del div en el DOM y en window._hls
-  final String _viewId =
-      'hlsp-${DateTime.now().microsecondsSinceEpoch}';
+  /// ID único por instancia: clave del div en el DOM y de window._hls.
+  final String _viewId = 'hlsp-${DateTime.now().microsecondsSinceEpoch}';
 
   @override
   void initState() {
@@ -51,37 +58,37 @@ class _HlsPlayerState extends State<HlsPlayer> {
   }
 
   void _registerFactory() {
-    ui_web.platformViewRegistry.registerViewFactory(_viewId, (int id) {
-      // Contenedor <div> que será el root del HtmlElementView
-      final div = web.document.createElement('div') as web.HTMLDivElement;
-      div.id = 'hlsv-$_viewId';
-      div.style.cssText = 'width:100%;height:100%;background:#000;overflow:hidden;';
+    ui_web.platformViewRegistry.registerViewFactory(
+      _viewId,
+      (int id) {
+        // El div es creado DESDE JS para evitar depender de package:web.
+        // flutter_web lo trata como HTMLElement nativo (que efectivamente es).
+        final container = _createContainer(_viewId.toJS);
 
-      // Inicializar HLS.js después de que el div esté en el DOM
-      Future.delayed(const Duration(milliseconds: 150), () => _initHls());
+        // Después de que Flutter inserte el div en el DOM, iniciar HLS.js.
+        Future.delayed(const Duration(milliseconds: 200), _initHls);
 
-      return div;
-    });
+        return container;
+      },
+      isVisible: true,
+    );
   }
 
   void _initHls() {
+    if (!mounted) return;
     _hlsCreate(
       _viewId.toJS,
       widget.url.toJS,
-      widget.onReady == null
-          ? null
-          : (() => widget.onReady!()).toJS,
-      widget.onError == null
-          ? null
-          : (() => widget.onError!()).toJS,
+      widget.onReady == null ? null : (() { widget.onReady!(); }).toJS,
+      widget.onError == null ? null : (() { widget.onError!(); }).toJS,
     );
   }
 
   @override
   void didUpdateWidget(HlsPlayer old) {
     super.didUpdateWidget(old);
+    // Solo recargamos si la URL cambió (zapping).
     if (old.url != widget.url) {
-      // Cambio de canal: recargar con la nueva URL
       _hlsLoad(_viewId.toJS, widget.url.toJS);
     }
   }
@@ -94,5 +101,8 @@ class _HlsPlayerState extends State<HlsPlayer> {
 
   @override
   Widget build(BuildContext context) =>
-      HtmlElementView(viewType: _viewId);
+      // SizedBox.expand garantiza que el HtmlElementView llene su contenedor.
+      SizedBox.expand(
+        child: HtmlElementView(viewType: _viewId),
+      );
 }

@@ -346,38 +346,39 @@ class _PlayerScreenState extends State<PlayerScreen> {
   );
 
   // ── Player web con HLS.js ────────────────────────────────────────────────
-  Widget _buildWebPlayer() => Stack(children: [
-    // HlsPlayer ocupa toda la pantalla y llama onReady/onError desde JS
-    HlsPlayer(
-      url: _streamUrl,
-      onReady: () {
-        if (!mounted) return;
-        setState(() => _webReady = true);
-        _startHideTimer();
-      },
-      onError: () {
-        if (!mounted) return;
-        setState(() => _hasError = true);
-      },
-    ),
-    // Spinner mientras HLS.js no confirma que el stream está listo
-    if (!_webReady)
-      const Center(child: Column(mainAxisSize: MainAxisSize.min, children: [
-        CircularProgressIndicator(color: AppColors.celeste),
-        SizedBox(height: 16),
-        Text('Cargando stream...', style: TextStyle(color: Colors.white54)),
-      ])),
-    // Zona tap para mostrar la barra superior
-    Positioned(
-      top: 0, left: 0, right: 0,
-      height: double.infinity,
-      child: GestureDetector(
-        behavior: HitTestBehavior.translucent,
-        onTap: _onTapScreen,
-        child: const SizedBox.expand(),
+  Widget _buildWebPlayer() => Stack(
+    fit: StackFit.expand,  // el Stack y sus hijos llenan toda la pantalla
+    children: [
+      // HlsPlayer ocupa toda la pantalla (SizedBox.expand está dentro del widget)
+      HlsPlayer(
+        url: _streamUrl,
+        onReady: () {
+          if (!mounted) return;
+          setState(() => _webReady = true);
+          _startHideTimer();
+        },
+        onError: () {
+          if (!mounted) return;
+          setState(() => _hasError = true);
+        },
       ),
-    ),
-  ]);
+      // Spinner mientras HLS.js confirma que el stream está listo
+      if (!_webReady)
+        const Center(child: Column(mainAxisSize: MainAxisSize.min, children: [
+          CircularProgressIndicator(color: AppColors.celeste),
+          SizedBox(height: 16),
+          Text('Cargando stream...', style: TextStyle(color: Colors.white54)),
+        ])),
+      // Zona tap para mostrar la barra superior (ocupa toda la pantalla)
+      Positioned.fill(
+        child: GestureDetector(
+          behavior: HitTestBehavior.translucent,
+          onTap: _onTapScreen,
+          child: const SizedBox.expand(),
+        ),
+      ),
+    ],
+  );
 
   Widget _buildError() => Center(child: Column(
     mainAxisSize: MainAxisSize.min, children: [
