@@ -37,3 +37,11 @@
   to = "http://allinonestream.fans:8080/movie/:splat"
   status = 200
   force = true
+
+# Media server interno: segmentos HLS vienen de este servidor tras el redirect 302
+# IP descubierta 2026-06-15 en arquitectura allinonestream.fans
+[[redirects]]
+  from = "/xtream-media/*"
+  to = "http://23.237.104.74:8080/:splat"
+  status = 200
+  force = true
