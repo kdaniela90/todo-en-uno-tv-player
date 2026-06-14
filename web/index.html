@@ -78,6 +78,61 @@
         setTimeout(() => el.remove(), 400);
       }
     });
+
+    // ── HLS.js player bridge (usado por lib/widgets/hls_player_web.dart) ──
+    window._hls = {};
+
+    window.hlsCreate = function(viewId, url, onReady, onError) {
+      var container = document.getElementById('hlsv-' + viewId);
+      if (!container) { setTimeout(function(){ window.hlsCreate(viewId, url, onReady, onError); }, 100); return; }
+
+      // Limpiar instancia anterior si existe
+      if (window._hls[viewId]) { window._hls[viewId].destroy(); delete window._hls[viewId]; }
+
+      var video = document.createElement('video');
+      video.style.cssText = 'width:100%;height:100%;background:#000;display:block;';
+      video.setAttribute('playsinline', '');
+      video.setAttribute('autoplay', '');
+      container.innerHTML = '';
+      container.appendChild(video);
+
+      if (window.Hls && Hls.isSupported()) {
+        var hls = new Hls({ lowLatencyMode: false, debug: false });
+        hls.loadSource(url);
+        hls.attachMedia(video);
+        hls.on(Hls.Events.MANIFEST_PARSED, function() {
+          video.play().catch(function(){});
+          if (onReady) onReady();
+        });
+        hls.on(Hls.Events.ERROR, function(event, data) {
+          if (data.fatal && onError) onError();
+        });
+        window._hls[viewId] = hls;
+      } else if (video.canPlayType('application/vnd.apple.mpegurl')) {
+        // Safari: HLS nativo
+        video.src = url;
+        video.addEventListener('loadeddata', function() { if (onReady) onReady(); });
+        video.addEventListener('error', function() { if (onError) onError(); });
+        video.play().catch(function(){});
+      } else {
+        if (onError) onError();
+      }
+    };
+
+    window.hlsDestroy = function(viewId) {
+      if (window._hls && window._hls[viewId]) {
+        window._hls[viewId].destroy();
+        delete window._hls[viewId];
+      }
+    };
+
+    window.hlsLoad = function(viewId, url) {
+      if (window._hls && window._hls[viewId]) {
+        window._hls[viewId].stopLoad();
+        window._hls[viewId].loadSource(url);
+        window._hls[viewId].startLoad();
+      }
+    };
   </script>
 
   <script src="flutter_bootstrap.js" async></script>

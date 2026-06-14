@@ -24,6 +24,7 @@ dependencies:
   timezone: ^0.9.4
   wakelock_plus: ^1.1.4        # soporta web via Screen Wake Lock API
   connectivity_plus: ^6.0.3   # soporta web
+  web: ^0.5.1                  # DOM APIs para el player HLS en web
 
 dev_dependencies:
   flutter_test:

@@ -10,6 +10,7 @@ import '../models/channel.dart';
 import '../services/xtream_service.dart';
 import '../services/web_tracks.dart';
 import '../theme/app_theme.dart';
+import '../widgets/hls_player.dart';
 
 // TV D-pad seek amount
 const _kSeekSecs = 10;
@@ -36,10 +37,11 @@ class PlayerScreen extends StatefulWidget {
 }
 
 class _PlayerScreenState extends State<PlayerScreen> {
-  late VideoPlayerController _videoController;
+  VideoPlayerController? _videoController; // null en web
   ChewieController? _chewieController;
-  bool _hasError = false;
-  bool _showBar = true;
+  bool _hasError  = false;
+  bool _showBar   = true;
+  bool _webReady  = false; // true cuando HLS.js confirma que el stream está listo
   Timer? _hideTimer;
 
   // Canal actual
@@ -81,14 +83,22 @@ class _PlayerScreenState extends State<PlayerScreen> {
   }
 
   Future<void> _initPlayer() async {
+    if (kIsWeb) {
+      // En web: HlsPlayer maneja la reproducción vía HLS.js.
+      // Reseteamos flags para que el widget se reconstruya con la nueva URL.
+      if (mounted) setState(() { _hasError = false; _webReady = false; });
+      return;
+    }
+
+    // ── Plataformas nativas (Android / TV) ──────────────────────────────────
     _videoController = VideoPlayerController.networkUrl(
       Uri.parse(_streamUrl),
       httpHeaders: {'User-Agent': 'Mozilla/5.0', 'Connection': 'keep-alive'},
     );
     try {
-      await _videoController.initialize();
+      await _videoController!.initialize();
       _chewieController = ChewieController(
-        videoPlayerController: _videoController,
+        videoPlayerController: _videoController!,
         autoPlay: true,
         looping: false,
         allowFullScreen: true,
@@ -178,9 +188,12 @@ class _PlayerScreenState extends State<PlayerScreen> {
 
     _hideTimer?.cancel();
     _trackLoadTimer?.cancel();
-    _chewieController?.dispose();
-    _chewieController = null;
-    _videoController.dispose();
+    if (!kIsWeb) {
+      _chewieController?.dispose();
+      _chewieController = null;
+      _videoController?.dispose();
+      _videoController = null;
+    }
     _initPlayer();
 
     widget.service!.getShortEpg(ch.id).then((epg) {
@@ -224,7 +237,7 @@ class _PlayerScreenState extends State<PlayerScreen> {
       SystemChrome.setEnabledSystemUIMode(SystemUiMode.edgeToEdge);
     }
     _chewieController?.dispose();
-    _videoController.dispose();
+    _videoController?.dispose();
     super.dispose();
   }
 
@@ -241,28 +254,28 @@ class _PlayerScreenState extends State<PlayerScreen> {
         event.logicalKey == LogicalKeyboardKey.channelDown) {
       _switchChannel(1); return KeyEventResult.handled;
     }
-    if (_videoController.value.duration == Duration.zero) {
+    if (_videoController == null || _videoController!.value.duration == Duration.zero) {
       return KeyEventResult.ignored;
     }
-    final pos = _videoController.value.position;
-    final dur = _videoController.value.duration;
+    final pos = _videoController!.value.position;
+    final dur = _videoController!.value.duration;
     if (event.logicalKey == LogicalKeyboardKey.arrowRight ||
         event.logicalKey == LogicalKeyboardKey.mediaFastForward) {
       final next = pos + const Duration(seconds: _kSeekSecs);
-      _videoController.seekTo(next < dur ? next : dur);
+      _videoController!.seekTo(next < dur ? next : dur);
       return KeyEventResult.handled;
     }
     if (event.logicalKey == LogicalKeyboardKey.arrowLeft ||
         event.logicalKey == LogicalKeyboardKey.mediaRewind) {
       final prev = pos - const Duration(seconds: _kSeekSecs);
-      _videoController.seekTo(prev > Duration.zero ? prev : Duration.zero);
+      _videoController!.seekTo(prev > Duration.zero ? prev : Duration.zero);
       return KeyEventResult.handled;
     }
     if (event.logicalKey == LogicalKeyboardKey.select ||
         event.logicalKey == LogicalKeyboardKey.space) {
-      _videoController.value.isPlaying
-          ? _videoController.pause()
-          : _videoController.play();
+      _videoController!.value.isPlaying
+          ? _videoController!.pause()
+          : _videoController!.play();
       return KeyEventResult.handled;
     }
     return KeyEventResult.ignored;
@@ -278,6 +291,8 @@ class _PlayerScreenState extends State<PlayerScreen> {
         // ── Reproductor ──────────────────────────────────────────────────
         if (_hasError)
           _buildError()
+        else if (kIsWeb)
+          _buildWebPlayer()
         else if (_chewieController == null)
           const Center(child: Column(mainAxisSize: MainAxisSize.min, children: [
             CircularProgressIndicator(color: AppColors.celeste),
@@ -329,6 +344,40 @@ class _PlayerScreenState extends State<PlayerScreen> {
       ]),
     ),
   );
+
+  // ── Player web con HLS.js ────────────────────────────────────────────────
+  Widget _buildWebPlayer() => Stack(children: [
+    // HlsPlayer ocupa toda la pantalla y llama onReady/onError desde JS
+    HlsPlayer(
+      url: _streamUrl,
+      onReady: () {
+        if (!mounted) return;
+        setState(() => _webReady = true);
+        _startHideTimer();
+      },
+      onError: () {
+        if (!mounted) return;
+        setState(() => _hasError = true);
+      },
+    ),
+    // Spinner mientras HLS.js no confirma que el stream está listo
+    if (!_webReady)
+      const Center(child: Column(mainAxisSize: MainAxisSize.min, children: [
+        CircularProgressIndicator(color: AppColors.celeste),
+        SizedBox(height: 16),
+        Text('Cargando stream...', style: TextStyle(color: Colors.white54)),
+      ])),
+    // Zona tap para mostrar la barra superior
+    Positioned(
+      top: 0, left: 0, right: 0,
+      height: double.infinity,
+      child: GestureDetector(
+        behavior: HitTestBehavior.translucent,
+        onTap: _onTapScreen,
+        child: const SizedBox.expand(),
+      ),
+    ),
+  ]);
 
   Widget _buildError() => Center(child: Column(
     mainAxisSize: MainAxisSize.min, children: [

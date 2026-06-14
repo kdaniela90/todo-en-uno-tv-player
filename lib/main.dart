@@ -30,7 +30,7 @@ class TodoEnUnoTVApp extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return MaterialApp(
-      title: 'Todo en Uno TV',
+      title: 'TEUTV Player',
       debugShowCheckedModeBanner: false,
       theme: AppTheme.dark,
       initialRoute: '/',
