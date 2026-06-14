@@ -26,9 +26,11 @@ exports.handler = async (event) => {
     return { statusCode: 400, body: 'Missing params: u, p, id' };
   }
 
-  // HTTPS vía Cloudflare → cert válido → Lambda puede conectar sin errores TLS.
-  // El servidor hace 302 al media server; node-fetch lo sigue automáticamente.
-  const m3u8Url = `https://allinonestream.fans/live/${u}/${p}/${id}.m3u8`;
+  // HTTP puerto 8080 → va DIRECTO al servidor NexonHost, BYPASEANDO Cloudflare WAF.
+  // Cloudflare bloqueaba IPs de Netlify Lambda en el puerto 443 (HTTPS).
+  // Puerto 8080 no tiene WAF → el Lambda puede conectar.
+  // El servidor hace 302 al media server; fetch lo sigue automáticamente.
+  const m3u8Url = `http://allinonestream.fans:8080/live/${u}/${p}/${id}.m3u8`;
 
   try {
     const resp = await fetch(m3u8Url, {
