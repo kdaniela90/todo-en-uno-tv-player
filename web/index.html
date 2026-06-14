@@ -1,0 +1,82 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <base href="$FLUTTER_BASE_HREF">
+  <meta charset="UTF-8">
+  <meta content="IE=Edge" http-equiv="X-UA-Compatible">
+  <meta name="description" content="Todo en Uno TV — Tu entretenimiento en un solo lugar">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <meta name="apple-mobile-web-app-title" content="Todo en Uno TV">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+  <meta name="theme-color" content="#060C1B">
+
+  <!-- PWA manifest -->
+  <link rel="manifest" href="manifest.json">
+
+  <!-- Icons -->
+  <link rel="apple-touch-icon" href="icons/Icon-192.png">
+  <link rel="icon" type="image/png" href="favicon.png">
+
+  <title>Todo en Uno TV</title>
+
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    html, body {
+      background-color: #060C1B;
+      height: 100%;
+      width: 100%;
+      overflow: hidden;
+    }
+    /* Loading screen */
+    #loading {
+      position: fixed;
+      inset: 0;
+      background: #060C1B;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      gap: 20px;
+      z-index: 9999;
+      transition: opacity 0.4s ease;
+    }
+    #loading img { width: 160px; }
+    #loading .spinner {
+      width: 36px; height: 36px;
+      border: 3px solid rgba(93,224,230,.2);
+      border-top-color: #5DE0E6;
+      border-radius: 50%;
+      animation: spin 0.9s linear infinite;
+    }
+    #loading p {
+      color: rgba(255,255,255,.45);
+      font-family: -apple-system, sans-serif;
+      font-size: 13px;
+    }
+    @keyframes spin { to { transform: rotate(360deg); } }
+  </style>
+</head>
+<body>
+  <!-- Loading screen shown while Flutter initializes -->
+  <div id="loading">
+    <img src="assets/assets/images/logo.png" alt="Todo en Uno TV"
+         onerror="this.style.display='none'">
+    <div class="spinner"></div>
+    <p>Cargando...</p>
+  </div>
+
+  <script>
+    // Hide loading screen once Flutter renders
+    window.addEventListener('flutter-first-frame', function() {
+      const el = document.getElementById('loading');
+      if (el) {
+        el.style.opacity = '0';
+        setTimeout(() => el.remove(), 400);
+      }
+    });
+  </script>
+
+  <script src="flutter_bootstrap.js" async></script>
+</body>
+</html>

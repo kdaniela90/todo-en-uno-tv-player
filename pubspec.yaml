@@ -1,0 +1,39 @@
+name: todo_en_uno_tv
+description: Todo en Uno TV - Tu entretenimiento en un solo lugar
+
+publish_to: 'none'
+version: 1.0.0+1
+
+environment:
+  sdk: '>=3.0.0 <4.0.0'
+
+dependencies:
+  flutter:
+    sdk: flutter
+  http: ^1.2.0
+  shared_preferences: ^2.2.2
+  provider: ^6.1.1
+  video_player: ^2.8.2
+  chewie: 1.7.4
+  cached_network_image: ^3.3.1
+  google_fonts: ^6.2.1
+  qr_flutter: ^4.1.0
+  # flutter_local_notifications no soporta web — usamos stub condicional
+  # solo se importa en Android a través de reminder_service_stub.dart
+  flutter_local_notifications: ^17.2.1
+  timezone: ^0.9.4
+  wakelock_plus: ^1.1.4        # soporta web via Screen Wake Lock API
+  connectivity_plus: ^6.0.3   # soporta web
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  flutter_lints: ^3.0.0
+
+flutter:
+  uses-material-design: true
+  assets:
+    - assets/images/logo.png
+    - assets/images/icono-live-tv.png
+    - assets/images/icono-movies.png
+    - assets/images/icono-series.png
