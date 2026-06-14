@@ -79,6 +79,24 @@
       }
     });
 
+    // ── Reescribir URLs del servidor IPTV para que pasen por el proxy Netlify ──
+    // El servidor IPTV bloquea peticiones directas desde el navegador (CORS + mixed-content).
+    // Interceptamos fetch() globalmente y redirigimos allinonestream.fans → /xtream-live/
+    // Esto cubre tanto el manifest .m3u8 como cada segmento .ts que HLS.js solicite.
+    (function() {
+      var _origFetch = window.fetch;
+      window.fetch = function(input, init) {
+        var url = (typeof input === 'string') ? input : (input && input.url) || '';
+        if (url && url.match(/https?:\/\/allinonestream\.fans/i)) {
+          // Reescribir /live/ → /xtream-live/ para que pase por el redirect de Netlify CDN
+          var rewritten = url.replace(/https?:\/\/allinonestream\.fans:\d+\/live\//i, '/xtream-live/');
+          console.log('[TEUTV] fetch rewrite:', url, '→', rewritten);
+          return _origFetch.call(this, rewritten, init);
+        }
+        return _origFetch.call(this, input, init);
+      };
+    })();
+
     // ── HLS.js player bridge (usado por lib/widgets/hls_player_web.dart) ──
     window._hls = {};
 

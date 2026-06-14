@@ -87,11 +87,12 @@ class XtreamService {
   // Alias so movies_screen can call getVodCategories()
   Future<List<Category>> getVodCategories() => getMovieCategories();
 
-  // En web: usa el Netlify Function que obtiene el .m3u8 y reescribe los URLs
-  // de segmentos para evitar mixed-content (HTTP→HTTPS).
+  // En web: usa el redirect CDN de Netlify (/xtream-live/* → servidor IPTV).
+  // Si el m3u8 devuelve URLs absolutas HTTP, el patch de fetch() en index.html
+  // las reescribe automáticamente para que también pasen por el CDN.
   // En nativo: stream directo .ts
   String liveStreamUrl(String streamId) => kIsWeb
-      ? '/.netlify/functions/hls-proxy?u=$username&p=$password&id=$streamId'
+      ? '/xtream-live/$username/$password/$streamId.m3u8'
       : '$server/live/$username/$password/$streamId.ts';
 
   String vodStreamUrl(String streamId, String ext) => kIsWeb
