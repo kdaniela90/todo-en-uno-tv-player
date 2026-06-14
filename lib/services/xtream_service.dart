@@ -87,8 +87,11 @@ class XtreamService {
   // Alias so movies_screen can call getVodCategories()
   Future<List<Category>> getVodCategories() => getMovieCategories();
 
+  // En web: usa el Netlify Function que obtiene el .m3u8 y reescribe los URLs
+  // de segmentos para evitar mixed-content (HTTP→HTTPS).
+  // En nativo: stream directo .ts
   String liveStreamUrl(String streamId) => kIsWeb
-      ? '/xtream-live/$username/$password/$streamId.m3u8'
+      ? '/.netlify/functions/hls-proxy?u=$username&p=$password&id=$streamId'
       : '$server/live/$username/$password/$streamId.ts';
 
   String vodStreamUrl(String streamId, String ext) => kIsWeb
