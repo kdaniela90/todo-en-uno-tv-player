@@ -1,4 +1,5 @@
 import 'dart:convert';
+import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:http/http.dart' as http;
 import '../models/category.dart';
 import '../models/channel.dart';
@@ -14,7 +15,12 @@ class XtreamService {
 
   XtreamService({required this.server, required this.username, required this.password});
 
-  String get _base => '$server/player_api.php?username=$username&password=$password';
+  // En web usamos el proxy Netlify para evitar CORS y mixed-content HTTP→HTTPS
+  String get _apiBase => kIsWeb
+      ? '/xtream-api/player_api.php?username=$username&password=$password'
+      : '$server/player_api.php?username=$username&password=$password';
+
+  String get _base => _apiBase;
 
   Future<Map<String, dynamic>?> login() async {
     try {
@@ -81,8 +87,14 @@ class XtreamService {
   // Alias so movies_screen can call getVodCategories()
   Future<List<Category>> getVodCategories() => getMovieCategories();
 
-  String liveStreamUrl(String streamId) => '$server/live/$username/$password/$streamId.ts';
-  String vodStreamUrl(String streamId, String ext) => '$server/movie/$username/$password/$streamId.$ext';
+  String liveStreamUrl(String streamId) => kIsWeb
+      ? '/xtream-live/$username/$password/$streamId.ts'
+      : '$server/live/$username/$password/$streamId.ts';
+
+  String vodStreamUrl(String streamId, String ext) => kIsWeb
+      ? '/xtream-vod/$username/$password/$streamId.$ext'
+      : '$server/movie/$username/$password/$streamId.$ext';
+
   String movieStreamUrl(String streamId, String ext) => vodStreamUrl(streamId, ext);
 
   // ── Cast index (session cache) ───────────────────────────────────────────

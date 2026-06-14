@@ -8,3 +8,22 @@
 
 [build.environment]
   FLUTTER_WEB_USE_SKIA = "true"
+
+# Proxy: redirige /xtream-api/* al servidor IPTV (evita CORS y mixed-content)
+[[redirects]]
+  from = "/xtream-api/*"
+  to = "http://allinonestream.fans:8080/:splat"
+  status = 200
+  force = true
+
+[[redirects]]
+  from = "/xtream-live/*"
+  to = "http://allinonestream.fans:8080/live/:splat"
+  status = 200
+  force = true
+
+[[redirects]]
+  from = "/xtream-vod/*"
+  to = "http://allinonestream.fans:8080/movie/:splat"
+  status = 200
+  force = true
