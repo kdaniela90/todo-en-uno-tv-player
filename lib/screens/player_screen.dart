@@ -343,7 +343,10 @@ class _PlayerScreenState extends State<PlayerScreen> {
     ElevatedButton.icon(
       onPressed: () { setState(() => _hasError = false); _initPlayer(); },
       icon: const Icon(Icons.refresh), label: const Text('Reintentar'),
-      style: ElevatedButton.styleFrom(backgroundColor: AppColors.celeste)),
+      style: ElevatedButton.styleFrom(
+        backgroundColor: AppColors.celeste,
+        foregroundColor: Colors.white,
+      )),
   ]));
 }
 

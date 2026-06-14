@@ -88,7 +88,7 @@ class XtreamService {
   Future<List<Category>> getVodCategories() => getMovieCategories();
 
   String liveStreamUrl(String streamId) => kIsWeb
-      ? '/xtream-live/$username/$password/$streamId.ts'
+      ? '/xtream-live/$username/$password/$streamId.m3u8'
       : '$server/live/$username/$password/$streamId.ts';
 
   String vodStreamUrl(String streamId, String ext) => kIsWeb
