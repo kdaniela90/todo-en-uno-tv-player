@@ -132,8 +132,11 @@
       container.innerHTML = '';
       container.appendChild(video);
 
-      if (window.Hls && Hls.isSupported()) {
-        console.log('[TEUTV] Using HLS.js');
+      // Detectar si es HLS (canales en vivo) o video directo (VOD/películas)
+      var isHls = url.indexOf('hls-proxy') !== -1 || url.indexOf('.m3u8') !== -1;
+
+      if (isHls && window.Hls && Hls.isSupported()) {
+        console.log('[TEUTV] Using HLS.js for:', url);
         var hls = new Hls({ lowLatencyMode: false, debug: false });
         hls.loadSource(url);
         hls.attachMedia(video);
@@ -149,20 +152,32 @@
           if (data.fatal && onError) onError();
         });
         window._hls[viewId] = hls;
-      } else if (video.canPlayType('application/vnd.apple.mpegurl')) {
-        console.log('[TEUTV] Using native HLS (Safari)');
+      } else if (isHls && video.canPlayType('application/vnd.apple.mpegurl')) {
+        console.log('[TEUTV] Using native HLS (Safari) for:', url);
         video.src = url;
         video.addEventListener('loadeddata', function() { if (onReady) onReady(); });
         video.addEventListener('error', function(e) {
-          window._hlsLastError = 'nativeVideo:error:' + (e.message || 'unknown');
-          console.error('[TEUTV] Native video error', e);
+          window._hlsLastError = 'nativeHls:error';
+          console.error('[TEUTV] Native HLS error', e);
           if (onError) onError();
         });
         video.play().catch(function(){});
       } else {
-        window._hlsLastError = 'hlsNotSupported';
-        console.error('[TEUTV] HLS not supported on this browser');
-        if (onError) onError();
+        // VOD / MP4 — usar native <video> directamente
+        // vod-resolve devuelve 302 → /xtream-vod-media/ → CDN → MP4
+        console.log('[TEUTV] Using native video (VOD/MP4) for:', url);
+        video.src = url;
+        video.addEventListener('canplay', function() {
+          console.log('[TEUTV] Native video canplay');
+          video.play().catch(function(e){ console.warn('[TEUTV] play() rejected:', e); });
+          if (onReady) onReady();
+        });
+        video.addEventListener('error', function(e) {
+          var code = video.error ? video.error.code : '?';
+          window._hlsLastError = 'nativeVideo:MediaError:' + code;
+          console.error('[TEUTV] Native video error code=' + code, e);
+          if (onError) onError();
+        });
       }
     };
 

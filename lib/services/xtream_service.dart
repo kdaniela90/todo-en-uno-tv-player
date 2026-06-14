@@ -98,7 +98,7 @@ class XtreamService {
       : '$server/live/$username/$password/$streamId.ts';
 
   String vodStreamUrl(String streamId, String ext) => kIsWeb
-      ? '/xtream-vod/$username/$password/$streamId.$ext'
+      ? '/.netlify/functions/vod-resolve?u=$username&p=$password&id=$streamId&ext=$ext'
       : '$server/movie/$username/$password/$streamId.$ext';
 
   String movieStreamUrl(String streamId, String ext) => vodStreamUrl(streamId, ext);

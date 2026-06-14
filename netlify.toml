@@ -38,10 +38,18 @@
   status = 200
   force = true
 
-# Media server interno: segmentos HLS vienen de este servidor tras el redirect 302
-# IP descubierta 2026-06-15 en arquitectura allinonestream.fans
+# Media server HLS (canales en vivo): segmentos .ts y manifests con token
+# IP: 23.237.104.74:8080
 [[redirects]]
   from = "/xtream-media/*"
   to = "http://23.237.104.74:8080/:splat"
+  status = 200
+  force = true
+
+# Media server VOD (películas): archivos MP4 con token
+# IP: 23.158.40.201:80
+[[redirects]]
+  from = "/xtream-vod-media/*"
+  to = "http://23.158.40.201:80/:splat"
   status = 200
   force = true
