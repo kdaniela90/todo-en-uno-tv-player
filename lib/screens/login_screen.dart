@@ -115,15 +115,10 @@ class _LoginScreenState extends State<LoginScreen> {
             child: Column(
               mainAxisSize: MainAxisSize.min,
               children: [
-                // Logo principal
-                Image.asset(
-                  'assets/images/logo.png',
-                  width: 180,
-                  fit: BoxFit.contain,
-                ),
-                const SizedBox(height: 20),
-                AnimatedRemote(width: 80, height: 160),
-                const SizedBox(height: 20),
+                AnimatedRemote(width: 90, height: 180),
+                const SizedBox(height: 24),
+                _BrandWordmark(size: 'lg'),
+                const SizedBox(height: 16),
                 const Text('Tu entretenimiento en un solo lugar',
                   style: TextStyle(
                     color: Colors.white38,
@@ -159,15 +154,9 @@ class _LoginScreenState extends State<LoginScreen> {
       child: ConstrainedBox(
         constraints: const BoxConstraints(maxWidth: 400),
         child: Column(children: [
-          // Logo principal
-          Image.asset(
-            'assets/images/logo.png',
-            width: 160,
-            fit: BoxFit.contain,
-          ),
-          const SizedBox(height: 10),
-          // Control animado como acento visual (más pequeño)
-          AnimatedRemote(width: 32, height: 64),
+          AnimatedRemote(width: 60, height: 120),
+          const SizedBox(height: 16),
+          _BrandWordmark(size: 'md'),
           const SizedBox(height: 12),
           const Text('Tu entretenimiento en un solo lugar',
             textAlign: TextAlign.center,
@@ -294,5 +283,58 @@ class _LoginScreenState extends State<LoginScreen> {
     ),
     validator: validator,
   );
+}
+
+// ── Wordmark TODO EN UNO TV (estilo BrandKit) ────────────────────────────────
+class _BrandWordmark extends StatelessWidget {
+  final String size; // 'lg' | 'md'
+  const _BrandWordmark({required this.size});
+
+  @override
+  Widget build(BuildContext context) {
+    final double mainSize = size == 'lg' ? 32 : 22;
+    final double tvSize   = size == 'lg' ? 18 : 13;
+    const gradient = LinearGradient(
+      colors: [Color(0xFF5DE0E6), Color(0xFF3372E3), Color(0xFF7426EF)],
+    );
+    return Column(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        ShaderMask(
+          shaderCallback: (r) => gradient.createShader(r),
+          child: Text('TODO',
+            style: TextStyle(
+              fontFamily: 'Poppins',
+              fontSize: mainSize,
+              fontWeight: FontWeight.w800,
+              color: Colors.white,
+              letterSpacing: 2,
+              height: 1.1,
+            )),
+        ),
+        ShaderMask(
+          shaderCallback: (r) => gradient.createShader(r),
+          child: Text('EN UNO',
+            style: TextStyle(
+              fontFamily: 'Poppins',
+              fontSize: mainSize,
+              fontWeight: FontWeight.w800,
+              color: Colors.white,
+              letterSpacing: 2,
+              height: 1.1,
+            )),
+        ),
+        Text('TV',
+          style: TextStyle(
+            fontFamily: 'Poppins',
+            fontSize: tvSize,
+            fontWeight: FontWeight.w700,
+            color: Colors.white,
+            letterSpacing: 6,
+            height: 1.4,
+          )),
+      ],
+    );
+  }
 }
 
