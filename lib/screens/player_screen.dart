@@ -360,43 +360,62 @@ class _PlayerScreenState extends State<PlayerScreen> {
     ),
   );
 
-  // ── Player web con HLS.js ────────────────────────────────────────────────
-  Widget _buildWebPlayer() => Stack(
-    fit: StackFit.expand,  // el Stack y sus hijos llenan toda la pantalla
-    children: [
-      // HlsPlayer ocupa toda la pantalla (SizedBox.expand está dentro del widget)
-      HlsPlayer(
-        url: _streamUrl,
-        onReady: () {
-          if (!mounted) return;
-          _webTimeoutTimer?.cancel();
-          setState(() => _webReady = true);
-          _startHideTimer();
-        },
-        onError: () {
-          if (!mounted) return;
-          _webTimeoutTimer?.cancel();
-          final detail = HlsPlayer.lastError();
-          setState(() { _hasError = true; _webErrorDetail = detail; });
-        },
-      ),
-      // Spinner mientras HLS.js confirma que el stream está listo
-      if (!_webReady)
-        const Center(child: Column(mainAxisSize: MainAxisSize.min, children: [
-          CircularProgressIndicator(color: AppColors.celeste),
-          SizedBox(height: 16),
-          Text('Cargando stream...', style: TextStyle(color: Colors.white54)),
-        ])),
-      // Zona tap para mostrar la barra superior (ocupa toda la pantalla)
-      Positioned.fill(
-        child: GestureDetector(
-          behavior: HitTestBehavior.translucent,
-          onTap: _onTapScreen,
-          child: const SizedBox.expand(),
+  // ── Player web con HLS.js / native video ────────────────────────────────
+  Widget _buildWebPlayer() {
+    final isVod = _streamUrl.contains('vod-resolve');
+    return Stack(
+      fit: StackFit.expand,
+      children: [
+        HlsPlayer(
+          url: _streamUrl,
+          isVod: isVod,
+          onReady: () {
+            if (!mounted) return;
+            _webTimeoutTimer?.cancel();
+            setState(() => _webReady = true);
+            _startHideTimer();
+          },
+          onError: () {
+            if (!mounted) return;
+            _webTimeoutTimer?.cancel();
+            final detail = HlsPlayer.lastError();
+            setState(() { _hasError = true; _webErrorDetail = detail; });
+          },
         ),
-      ),
-    ],
-  );
+        // Spinner de carga
+        if (!_webReady)
+          const Center(child: Column(mainAxisSize: MainAxisSize.min, children: [
+            CircularProgressIndicator(color: AppColors.celeste),
+            SizedBox(height: 16),
+            Text('Cargando...', style: TextStyle(color: Colors.white54)),
+          ])),
+        // Zona tap para mostrar barra superior.
+        // VOD: solo cubre 85% superior — deja espacio para controles nativos del browser.
+        // Live: cubre toda la pantalla.
+        if (isVod)
+          Align(
+            alignment: Alignment.topCenter,
+            child: FractionallySizedBox(
+              heightFactor: 0.85,
+              widthFactor: 1.0,
+              child: GestureDetector(
+                behavior: HitTestBehavior.translucent,
+                onTap: _onTapScreen,
+                child: const SizedBox.expand(),
+              ),
+            ),
+          )
+        else
+          Positioned.fill(
+            child: GestureDetector(
+              behavior: HitTestBehavior.translucent,
+              onTap: _onTapScreen,
+              child: const SizedBox.expand(),
+            ),
+          ),
+      ],
+    );
+  }
 
   Widget _buildError() => Center(child: Column(
     mainAxisSize: MainAxisSize.min, children: [

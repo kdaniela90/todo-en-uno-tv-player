@@ -6,6 +6,7 @@ class HlsPlayer extends StatelessWidget {
   const HlsPlayer({
     super.key,
     required this.url,
+  final bool isVod = false,
     this.onReady,
     this.onError,
   });

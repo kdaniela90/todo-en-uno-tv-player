@@ -163,9 +163,12 @@
         });
         video.play().catch(function(){});
       } else {
-        // VOD / MP4 — usar native <video> directamente
+        // VOD / MP4 — usar native <video> con controles nativos del browser
         // vod-resolve devuelve 302 → /xtream-vod-media/ → CDN → MP4
         console.log('[TEUTV] Using native video (VOD/MP4) for:', url);
+        video.setAttribute('controls', '');
+        video.setAttribute('controlsList', 'nodownload');
+        video.style.cssText = 'width:100%;height:100%;background:#000;display:block;object-fit:contain;';
         video.src = url;
         video.addEventListener('canplay', function() {
           console.log('[TEUTV] Native video canplay');

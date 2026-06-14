@@ -45,11 +45,14 @@ class HlsPlayer extends StatefulWidget {
     required this.url,
     this.onReady,
     this.onError,
+    this.isVod = false,
   });
 
   final String url;
   final VoidCallback? onReady;
   final VoidCallback? onError;
+  /// true cuando la URL es VOD (película/serie): muestra controles nativos del browser.
+  final bool isVod;
 
   /// Lee window._hlsLastError — el último error fatal reportado por HLS.js.
   static String lastError() {
