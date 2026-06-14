@@ -42,7 +42,9 @@ class _PlayerScreenState extends State<PlayerScreen> {
   bool _hasError  = false;
   bool _showBar   = true;
   bool _webReady  = false; // true cuando HLS.js confirma que el stream está listo
+  String _webErrorDetail = ''; // mensaje de error de HLS.js (solo web)
   Timer? _hideTimer;
+  Timer? _webTimeoutTimer; // si no carga en 20s, muestra error
 
   // Canal actual
   late String _title;
@@ -86,7 +88,19 @@ class _PlayerScreenState extends State<PlayerScreen> {
     if (kIsWeb) {
       // En web: HlsPlayer maneja la reproducción vía HLS.js.
       // Reseteamos flags para que el widget se reconstruya con la nueva URL.
-      if (mounted) setState(() { _hasError = false; _webReady = false; });
+      _webTimeoutTimer?.cancel();
+      if (mounted) {
+        setState(() { _hasError = false; _webReady = false; _webErrorDetail = ''; });
+        // Si en 20 s HLS.js no confirma onReady ni onError, forzamos error
+        _webTimeoutTimer = Timer(const Duration(seconds: 20), () {
+          if (mounted && !_webReady && !_hasError) {
+            setState(() {
+              _hasError = true;
+              _webErrorDetail = 'timeout: sin respuesta en 20 s';
+            });
+          }
+        });
+      }
       return;
     }
 
@@ -230,6 +244,7 @@ class _PlayerScreenState extends State<PlayerScreen> {
     _hideTimer?.cancel();
     _bannerTimer?.cancel();
     _trackLoadTimer?.cancel();
+    _webTimeoutTimer?.cancel();
     WakelockPlus.disable();
     if (!kIsWeb) {
       SystemChrome.setPreferredOrientations(
@@ -354,12 +369,15 @@ class _PlayerScreenState extends State<PlayerScreen> {
         url: _streamUrl,
         onReady: () {
           if (!mounted) return;
+          _webTimeoutTimer?.cancel();
           setState(() => _webReady = true);
           _startHideTimer();
         },
         onError: () {
           if (!mounted) return;
-          setState(() => _hasError = true);
+          _webTimeoutTimer?.cancel();
+          final detail = HlsPlayer.lastError();
+          setState(() { _hasError = true; _webErrorDetail = detail; });
         },
       ),
       // Spinner mientras HLS.js confirma que el stream está listo
@@ -389,9 +407,24 @@ class _PlayerScreenState extends State<PlayerScreen> {
     const SizedBox(height: 8),
     const Text('Verifica tu conexión o intenta con otro canal',
       style: TextStyle(color: Colors.white54, fontSize: 13)),
+    // Detalle técnico del error (solo cuando hay info disponible)
+    if (_webErrorDetail.isNotEmpty) ...[
+      const SizedBox(height: 8),
+      Padding(
+        padding: const EdgeInsets.symmetric(horizontal: 32),
+        child: Text(
+          _webErrorDetail,
+          style: const TextStyle(color: Colors.red, fontSize: 11),
+          textAlign: TextAlign.center,
+        ),
+      ),
+    ],
     const SizedBox(height: 24),
     ElevatedButton.icon(
-      onPressed: () { setState(() => _hasError = false); _initPlayer(); },
+      onPressed: () {
+        setState(() { _hasError = false; _webErrorDetail = ''; });
+        _initPlayer();
+      },
       icon: const Icon(Icons.refresh), label: const Text('Reintentar'),
       style: ElevatedButton.styleFrom(
         backgroundColor: AppColors.celeste,

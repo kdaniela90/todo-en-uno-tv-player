@@ -14,6 +14,9 @@ class HlsPlayer extends StatelessWidget {
   final VoidCallback? onReady;
   final VoidCallback? onError;
 
+  /// Devuelve el último error de HLS.js (solo disponible en web).
+  static String lastError() => '';
+
   @override
   Widget build(BuildContext context) => const SizedBox.shrink();
 }

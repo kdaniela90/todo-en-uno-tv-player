@@ -29,7 +29,15 @@ external void _hlsDestroy(JSString viewId);
 @JS('hlsLoad')
 external void _hlsLoad(JSString viewId, JSString url);
 
+/// Último error de HLS.js almacenado en window._hlsLastError por JS.
+@JS('_hlsLastError')
+external JSString get _hlsLastErrorJs;
+
 // ── Widget ────────────────────────────────────────────────────────────────────
+
+// Expone el último error de HLS.js al resto del app (e.g. player_screen.dart).
+// lee window._hlsLastError que JS escribe en web/index.html.
+// ignore: non_constant_identifier_names
 
 class HlsPlayer extends StatefulWidget {
   const HlsPlayer({
@@ -42,6 +50,11 @@ class HlsPlayer extends StatefulWidget {
   final String url;
   final VoidCallback? onReady;
   final VoidCallback? onError;
+
+  /// Lee window._hlsLastError — el último error fatal reportado por HLS.js.
+  static String lastError() {
+    try { return _hlsLastErrorJs.toDart; } catch (_) { return ''; }
+  }
 
   @override
   State<HlsPlayer> createState() => _HlsPlayerState();
