@@ -99,6 +99,10 @@
 
     // ── HLS.js player bridge (usado por lib/widgets/hls_player_web.dart) ──
     window._hls = {};
+    // Referencia global al video nativo activo (VOD/MP4).
+    // Necesario para limpiarlo correctamente cuando Flutter cambia de canal/película,
+    // incluso si el viewId cambia (widget reconstruido).
+    window._activeVideo = null;
 
     // Crea el <div> contenedor del player y lo devuelve.
     // Lo llama Flutter (dart:ui_web registerViewFactory) desde hls_player_web.dart.
@@ -112,6 +116,29 @@
     // Último error de HLS.js — legible desde Dart con @JS('_hlsLastError')
     window._hlsLastError = '';
 
+    // Limpia TODOS los streams activos (HLS.js + video nativo), sin importar viewId.
+    // Crítico: el servidor IPTV limita a 1 stream por cuenta. Si no se libera el stream
+    // anterior antes de autenticar el nuevo, el servidor retorna 403.
+    window._destroyAllStreams = function() {
+      // Destruir TODAS las instancias HLS.js (no solo la del viewId actual)
+      // Esto cubre el caso donde Flutter recrea el widget con un nuevo viewId.
+      Object.keys(window._hls).forEach(function(vid) {
+        console.log('[TEUTV] destroying HLS instance viewId=' + vid);
+        try { window._hls[vid].destroy(); } catch(e) {}
+        delete window._hls[vid];
+      });
+      // Destruir video nativo activo (VOD/MP4)
+      if (window._activeVideo) {
+        try {
+          window._activeVideo.pause();
+          window._activeVideo.removeAttribute('src');
+          window._activeVideo.load(); // Reset: cancela todas las requests de red
+        } catch(e) {}
+        window._activeVideo = null;
+        console.log('[TEUTV] destroyed native video');
+      }
+    };
+
     window.hlsCreate = function(viewId, url, onReady, onError) {
       console.log('[TEUTV] hlsCreate viewId=' + viewId + ' url=' + url);
 
@@ -122,8 +149,8 @@
         return;
       }
 
-      // Limpiar instancia anterior si existe
-      if (window._hls[viewId]) { window._hls[viewId].destroy(); delete window._hls[viewId]; }
+      // Limpiar TODOS los streams activos antes de crear uno nuevo
+      window._destroyAllStreams();
 
       var video = document.createElement('video');
       video.style.cssText = 'width:100%;height:100%;background:#000;display:block;';
@@ -168,13 +195,22 @@
         console.log('[TEUTV] Using native video (VOD/MP4) for:', url);
         video.setAttribute('controls', '');
         video.setAttribute('controlsList', 'nodownload');
+        video.setAttribute('preload', 'auto');
         video.style.cssText = 'width:100%;height:100%;background:#000;display:block;object-fit:contain;';
+        // Registrar como video activo ANTES de asignar src, para que _destroyAllStreams
+        // pueda limpiarlo si se llama hlsCreate nuevamente mientras carga.
+        window._activeVideo = video;
         video.src = url;
-        video.addEventListener('canplay', function() {
-          console.log('[TEUTV] Native video canplay');
+        var _readyFired = false;
+        function _onVodReady() {
+          if (_readyFired) return;
+          _readyFired = true;
+          console.log('[TEUTV] Native video ready — playing');
           video.play().catch(function(e){ console.warn('[TEUTV] play() rejected:', e); });
           if (onReady) onReady();
-        });
+        }
+        video.addEventListener('canplay', _onVodReady);
+        video.addEventListener('loadeddata', _onVodReady);
         video.addEventListener('error', function(e) {
           var code = video.error ? video.error.code : '?';
           window._hlsLastError = 'nativeVideo:MediaError:' + code;
@@ -185,10 +221,8 @@
     };
 
     window.hlsDestroy = function(viewId) {
-      if (window._hls && window._hls[viewId]) {
-        window._hls[viewId].destroy();
-        delete window._hls[viewId];
-      }
+      // Destruir todos los streams activos al disponer el widget
+      window._destroyAllStreams();
     };
 
     window.hlsLoad = function(viewId, url) {
