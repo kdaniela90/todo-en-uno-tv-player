@@ -302,6 +302,20 @@ html, body { width: 100%; height: 100%; background: var(--bg); color: var(--text
 .mobile-search-field input { flex:1; background:none; border:none; color:var(--text); font-family:'Poppins',sans-serif; font-size:14px; padding:11px 0; outline:none; }
 .mobile-search-field input::placeholder { color:var(--text-dim); }
 
+/* ── MV FULLSCREEN ── */
+/* CSS fake fullscreen: topbar and toolbar are hidden, grid fills viewport */
+#screen-app.mv-fs-mode .topbar { display:none !important; }
+#screen-app.mv-fs-mode .mobile-breadcrumb { display:none !important; }
+#screen-app.mv-fs-mode #view-multiview { position:fixed !important; inset:0 !important; z-index:150 !important; background:#000; }
+#screen-app.mv-fs-mode .multiview-toolbar { display:none !important; }
+.mv-fs-exit { position:fixed; top:10px; right:12px; z-index:160; background:rgba(0,0,0,.75); border:none; color:#fff; border-radius:8px; padding:6px 14px; font-size:13px; font-weight:600; cursor:pointer; font-family:'Poppins',sans-serif; display:none; align-items:center; gap:6px; }
+#screen-app.mv-fs-mode .mv-fs-exit { display:flex; }
+/* When browser fullscreen is used, grid also needs to fill its fullscreen element */
+#view-multiview:fullscreen { background:#000; display:flex; flex-direction:column; }
+#view-multiview:-webkit-full-screen { background:#000; display:flex; flex-direction:column; }
+#view-multiview:fullscreen .mv-grid,
+#view-multiview:-webkit-full-screen .mv-grid { flex:1; min-height:0; }
+
 /* ── MV AUDIO ── */
 .mv-cell.mv-audio-active { outline:3px solid var(--celeste); outline-offset:-3px; }
 .mv-audio-btn { position:absolute; bottom:8px; right:10px; background:rgba(0,0,0,.75); border:none; color:#fff; border-radius:50%; width:28px; height:28px; font-size:12px; cursor:pointer; display:none; align-items:center; justify-content:center; z-index:5; }
@@ -385,12 +399,16 @@ html, body { width: 100%; height: 100%; background: var(--bg); color: var(--text
 
 /* ── LANDSCAPE MÓVIL (phones & small tablets in landscape) ── */
 @media (orientation:landscape) and (max-height:600px) {
-  /* Topbar compacto */
-  .topbar { padding:4px 12px; gap:10px; }
+  /* Breadcrumb nunca se muestra en landscape — evita espacio extra en iPhone SE (667px) */
+  .mobile-breadcrumb { display:none !important; }
+  /* Topbar: siempre usa icono de búsqueda, nunca la barra completa (evita que inflé la altura a 46px) */
+  .topbar-search { display:none !important; }
+  .topbar-search-icon-btn { display:flex !important; }
+  /* Topbar compacto — altura total ≈ 34px (26px canvas + 8px padding) */
+  .topbar { padding:4px 10px; gap:8px; }
   .topbar-logo-canvas { height:26px !important; width:auto !important; }
-  .topbar-wordmark { font-size:13px; }
-  .topbar-settings-btn { padding:5px; font-size:16px; }
-  .topbar-search-icon-btn { padding:5px; font-size:15px; }
+  .topbar-wordmark { font-size:12px; }
+  .topbar-settings-btn { padding:4px; font-size:15px; }
   /* Hub adaptado a landscape: 4 columnas, más compacto */
   .hub-grid { grid-template-columns:repeat(4,1fr); gap:10px; }
   .hub-card { min-height:100px; padding:12px 14px; gap:8px; }
@@ -400,19 +418,19 @@ html, body { width: 100%; height: 100%; background: var(--bg); color: var(--text
   .hub-card-desc { font-size:11px; }
   .hub-title { font-size:18px; margin-bottom:10px; }
   /* Contenido menos padding */
-  .content { padding:8px 12px; }
-  .mobile-breadcrumb { padding:4px 12px 0; }
-  /* Multiview toolbar ultra-compacto */
-  .multiview-toolbar { padding:5px 12px; gap:8px; }
-  .mv-layout-btn { padding:4px 10px; font-size:11px; }
+  .content { padding:6px 12px; }
+  /* Multiview toolbar ultra-compacto — altura total ≈ 30px */
+  .multiview-toolbar { padding:3px 8px; gap:6px; }
+  .multiview-toolbar span { font-size:13px; }
+  .mv-layout-btn { padding:3px 8px; font-size:10px; }
   /* Player */
   .player-top { padding:4px 10px; }
   .player-title { font-size:12px; }
   /* Modal */
   .modal-sheet { max-height:90vh; }
   /* Categorías */
-  .cat-tabs { padding-bottom:8px; }
-  .cat-tab { padding:5px 12px; font-size:12px; }
+  .cat-tabs { padding-bottom:6px; margin-bottom:12px; }
+  .cat-tab { padding:4px 10px; font-size:11px; }
   /* Listas */
   .channel-card { padding:8px 12px; }
 }
@@ -638,11 +656,6 @@ html, body { width: 100%; height: 100%; background: var(--bg); color: var(--text
           <i class="fa-solid fa-chevron-right" style="color:var(--text-dim);font-size:13px" id="refresh-chevron"></i>
         </div>
         <div class="settings-row">
-          <span class="settings-row-icon"><i class="fa-solid fa-bell"></i></span>
-          <div class="settings-row-info"><div class="settings-row-label">Notificaciones</div><div class="settings-row-desc">Para recordatorios</div></div>
-          <button class="toggle" id="notif-toggle" onclick="toggleNotifications(this)"></button>
-        </div>
-        <div class="settings-row">
           <span class="settings-row-icon"><i class="fa-solid fa-circle-info"></i></span>
           <div class="settings-row-info"><div class="settings-row-label">Versión</div><div class="settings-row-desc">Web Player 1.0.0</div></div>
         </div>
@@ -671,9 +684,11 @@ html, body { width: 100%; height: 100%; background: var(--bg); color: var(--text
       <span style="font-size:15px;font-weight:600;flex:1">Multiview</span>
       <button class="mv-layout-btn active" id="mv-btn-2" onclick="setMvLayout(2)">2 Pantallas</button>
       <button class="mv-layout-btn" id="mv-btn-4" onclick="setMvLayout(4)">4 Pantallas</button>
-      <button class="mv-layout-btn" style="margin-left:8px" onclick="closeMvAll()"><i class="fa-solid fa-xmark"></i> Limpiar</button>
+      <button class="mv-layout-btn" id="mv-fs-btn" onclick="toggleMvFullscreen()" title="Pantalla completa"><i class="fa-solid fa-expand"></i></button>
+      <button class="mv-layout-btn" style="margin-left:4px" onclick="closeMvAll()"><i class="fa-solid fa-xmark"></i> Limpiar</button>
     </div>
     <div class="mv-grid layout-2" id="mv-grid"></div>
+    <button class="mv-fs-exit" onclick="toggleMvFullscreen()"><i class="fa-solid fa-compress"></i> Salir</button>
   </div>
 
 </div><!-- /screen-app -->
@@ -827,7 +842,7 @@ function startApp(){
   document.getElementById('screen-app').classList.add('active');
   document.getElementById('set-user-val').textContent=S.creds.username||'—';
   if(S.creds.userInfo&&S.creds.userInfo.exp_date){const d=new Date(parseInt(S.creds.userInfo.exp_date)*1000);document.getElementById('set-expiry-val').textContent=d.toLocaleDateString('es-MX');}
-  if(Notification.permission==='granted')document.getElementById('notif-toggle').classList.add('on');
+  if(typeof Notification!=='undefined'&&Notification.permission==='granted'){const nt=document.getElementById('notif-toggle');if(nt)nt.classList.add('on');}
   fetchAllData();showSection('hub');
 }
 
@@ -1088,10 +1103,12 @@ function doSearch(){
   const phIcon={live:'<i class="fa-solid fa-tv"></i>',movie:'<i class="fa-solid fa-film"></i>',series:'<i class="fa-solid fa-masks-theater"></i>'};
   el.innerHTML=`<div class="search-results-grid">${results.map(r=>{
     const poster=r.icon?`<img class="movie-poster" src="${esc(r.icon)}" loading="lazy" onerror="this.style.display='none';this.nextElementSibling.style.display='flex'"><div class="movie-poster-ph" style="display:none">${phIcon[r.type]}</div>`:`<div class="movie-poster-ph">${phIcon[r.type]}</div>`;
-    // Seed the data stores with search result info so openMovieDetail/openSeriesDetail work
+    // Seed the data stores with search result info so open*Detail / playLive work
+    if(r.type==='live'&&!_liveStore[r.id]){const lo=S.liveStreams.find(s=>s.stream_id==r.id);if(lo)_liveStore[r.id]=lo;}
     if(r.type==='movie'&&!_movieStore[r.id]){const mo=S.movies.find(m=>m.stream_id==r.id);if(mo)_movieStore[r.id]=mo;}
     if(r.type==='series'&&!_seriesStore[r.id]){const so=S.seriesList.find(s=>s.series_id==r.id);if(so)_seriesStore[r.id]=so;}
-    const action=r.type==='live'?`playLive(${r.id},'${esc(r.name)}','${esc(r.icon||'')}')`
+    // live: only pass id — name/icon come from _liveStore to avoid JS-injection via esc()
+    const action=r.type==='live'?`playLive(${r.id})`
       :r.type==='series'?`openSeriesDetail(${r.id})`:`openMovieDetail(${r.id})`;
     return `<div class="movie-card" onclick="${action}">${poster}<div class="movie-info"><div class="movie-title">${esc(r.name)}</div><div class="movie-meta">${esc(r.meta)}</div></div></div>`;
   }).join('')}</div>`;
@@ -1188,11 +1205,17 @@ function toggleFullscreen(){
     (document.exitFullscreen||document.webkitExitFullscreen||document.mozCancelFullScreen||function(){}).call(document);
     return;
   }
-  // iOS Safari: use native video fullscreen
-  if(typeof v.webkitEnterFullscreen==='function'){v.webkitEnterFullscreen();return;}
-  // Standard API: fullscreen on the player container for best UX
-  const req=ps.requestFullscreen||ps.webkitRequestFullscreen||ps.mozRequestFullScreen||v.requestFullscreen||v.webkitRequestFullscreen;
-  if(req){req.call(ps.requestFullscreen||ps.webkitRequestFullscreen||ps.mozRequestFullScreen?ps:v).catch(()=>{});}
+  // Standard Fullscreen API first (works on desktop, Android, iPad)
+  const req=ps.requestFullscreen||ps.webkitRequestFullscreen||ps.mozRequestFullScreen;
+  if(req){
+    req.call(ps).catch(()=>{
+      // Fallback: iOS iPhone native video fullscreen
+      if(typeof v.webkitEnterFullscreen==='function')v.webkitEnterFullscreen();
+    });
+    return;
+  }
+  // iOS iPhone only supports webkitEnterFullscreen on video element
+  if(typeof v.webkitEnterFullscreen==='function')v.webkitEnterFullscreen();
 }
 
 // ── MY LIST ──
@@ -1280,6 +1303,7 @@ function renderMultiview(){
   if(S.mvAudioSlot>=0&&S.mvAudioSlot<n){document.getElementById(`mv-cell-${S.mvAudioSlot}`)?.classList.add('mv-audio-active');}
 }
 const _mvTimers={};
+let _mvAddOrder=0;
 function _buildMvCell(cell,slot,id,name){
   const url=`/.netlify/functions/hls-proxy?u=${enc(S.creds.username)}&p=${enc(S.creds.password)}&id=${id}`;
   // Cancel any pending staggered load for this slot
@@ -1312,8 +1336,9 @@ function _buildMvCell(cell,slot,id,name){
   vid.muted=!isAudio;
   if(isAudio){cell.classList.add('mv-audio-active');audioBtn.innerHTML='<i class="fa-solid fa-volume-high"></i>';}
 
-  // Stagger HLS init: slot 0 immediately, others 1.2s apart to avoid IPTV rate-limit
-  const delay=slot*1200;
+  // Stagger by addition order (not slot number) so the first channel added starts first
+  const delay=_mvAddOrder*1200;
+  _mvAddOrder++;
   _mvTimers[slot]=setTimeout(()=>{
     _mvTimers[slot]=null;
     const stillHere=document.getElementById(`mv-cell-${slot}`);
@@ -1377,11 +1402,56 @@ function mvSelectAudio(slot){
 function _rebuildMvSlot(slot){const ch=S.mvChannels[slot];if(!ch)return;const cell=document.getElementById(`mv-cell-${slot}`);if(cell)_buildMvCell(cell,slot,ch.id,ch.name);}
 function setMvLayout(n){S.mvLayout=n;document.getElementById('mv-btn-2').classList.toggle('active',n===2);document.getElementById('mv-btn-4').classList.toggle('active',n===4);renderMultiview();}
 function closeMvAll(){
+  _mvAddOrder=0;
   Object.keys(_mvTimers).forEach(k=>{if(_mvTimers[k]){clearTimeout(_mvTimers[k]);_mvTimers[k]=null;}});
   S.mvHls.forEach(h=>{if(h)h.destroy();});S.mvHls=[];S.mvChannels=[];S.mvAudioSlot=-1;
   const grid=document.getElementById('mv-grid');if(grid)grid.innerHTML=''; // force full rebuild
   renderMultiview();
 }
+function toggleMvFullscreen(){
+  const app=document.getElementById('screen-app');
+  const mv=document.getElementById('view-multiview');
+  const btn=document.getElementById('mv-fs-btn');
+  const isCss=app.classList.contains('mv-fs-mode');
+  const isBrowser=!!(document.fullscreenElement||document.webkitFullscreenElement);
+  // Exit fullscreen
+  if(isCss||isBrowser){
+    app.classList.remove('mv-fs-mode');
+    if(isBrowser)(document.exitFullscreen||document.webkitExitFullscreen||function(){}).call(document);
+    if(btn)btn.innerHTML='<i class="fa-solid fa-expand"></i>';
+    return;
+  }
+  // Try browser fullscreen first (works on desktop/Android/iPad)
+  const req=mv.requestFullscreen||mv.webkitRequestFullscreen;
+  if(req){
+    req.call(mv).then(()=>{
+      if(btn)btn.innerHTML='<i class="fa-solid fa-compress"></i>';
+    }).catch(()=>{
+      // Fallback: CSS fullscreen (iOS iPhone, unsupported browsers)
+      app.classList.add('mv-fs-mode');
+      if(btn)btn.innerHTML='<i class="fa-solid fa-compress"></i>';
+    });
+    return;
+  }
+  // Direct CSS fullscreen (no Fullscreen API available)
+  app.classList.add('mv-fs-mode');
+  if(btn)btn.innerHTML='<i class="fa-solid fa-compress"></i>';
+}
+// Sync icon and class if user exits browser fullscreen via Escape key
+document.addEventListener('fullscreenchange',()=>{
+  if(!document.fullscreenElement&&!document.webkitFullscreenElement){
+    document.getElementById('screen-app').classList.remove('mv-fs-mode');
+    const btn=document.getElementById('mv-fs-btn');
+    if(btn)btn.innerHTML='<i class="fa-solid fa-expand"></i>';
+  }
+});
+document.addEventListener('webkitfullscreenchange',()=>{
+  if(!document.fullscreenElement&&!document.webkitFullscreenElement){
+    document.getElementById('screen-app').classList.remove('mv-fs-mode');
+    const btn=document.getElementById('mv-fs-btn');
+    if(btn)btn.innerHTML='<i class="fa-solid fa-expand"></i>';
+  }
+});
 function _mvPickerRow(ch){
   _liveStore[ch.stream_id]=ch;
   return `<div class="mv-picker-item" onclick="selectMvChannel(${ch.stream_id})"><img class="mv-picker-logo" src="${esc(ch.stream_icon||'')}" onerror="this.style.display='none'" loading="lazy"><span class="mv-picker-name">${esc(ch.name)}</span></div>`;
@@ -1397,6 +1467,7 @@ function selectMvChannel(id){
   _buildMvCell(cell,slot,id,name);
 }
 function clearMvSlot(slot){
+  if(_mvTimers[slot]){clearTimeout(_mvTimers[slot]);_mvTimers[slot]=null;}
   if(S.mvHls[slot]){S.mvHls[slot].destroy();S.mvHls[slot]=null;}
   S.mvChannels[slot]=null;
   if(S.mvAudioSlot===slot)S.mvAudioSlot=-1;

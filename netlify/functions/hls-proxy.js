@@ -83,30 +83,34 @@ exports.handler = async (event) => {
 };
 
 /**
- * Reescribe todas las líneas de segmento del m3u8 para que pasen
- * por el proxy /xtream-media/, resolviendo rutas relativas con finalBase.
+ * Reescribe segmentos y URIs de EXT-X-KEY/EXT-X-MAP para que pasen
+ * por el proxy /xtream-media/, asegurando que connect-src 'self' no bloquee nada.
  */
 function rewriteSegments(m3u8, finalBase, IPTV) {
-  return m3u8.replace(/^(?!#)([^\r\n]+)$/gm, (line) => {
+  function toProxy(uri) {
+    if (!uri || uri.startsWith('/xtream')) return uri;
+    try {
+      let abs;
+      if (uri.startsWith('http')) abs = uri;
+      else if (uri.startsWith('/')) abs = new URL(uri, IPTV).href;
+      else abs = new URL(uri, finalBase).href;
+      return '/xtream-media' + new URL(abs).pathname;
+    } catch {
+      return uri;
+    }
+  }
+
+  // Rewrite non-comment lines (segment URLs)
+  m3u8 = m3u8.replace(/^(?!#)([^\r\n]+)$/gm, (line) => {
     const t = line.trim();
     if (!t) return line;
-    // Ya reescrito
-    if (t.startsWith('/xtream')) return line;
-
-    let absUrl;
-    try {
-      if (t.startsWith('http')) {
-        absUrl = t;
-      } else if (t.startsWith('/')) {
-        // Ruta absoluta sin host → resolver contra el servidor IPTV
-        absUrl = new URL(t, IPTV).href;
-      } else {
-        // Ruta relativa → resolver contra la URL base del m3u8
-        absUrl = new URL(t, finalBase).href;
-      }
-      return '/xtream-media' + new URL(absUrl).pathname;
-    } catch {
-      return line;
-    }
+    return toProxy(t);
   });
+
+  // Rewrite URI="..." inside EXT-X-KEY and EXT-X-MAP tags
+  m3u8 = m3u8.replace(/(#EXT-X-(?:KEY|MAP)[^\r\n]*URI=")([^"]+)(")/gm, (match, pre, uri, post) => {
+    return pre + toProxy(uri) + post;
+  });
+
+  return m3u8;
 }
