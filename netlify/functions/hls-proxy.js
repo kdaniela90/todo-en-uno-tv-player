@@ -23,8 +23,7 @@ exports.handler = async (event) => {
         headers: { 'User-Agent': 'Mozilla/5.0', 'Accept': '*/*' },
       });
       if (!resp.ok) {
-        const body = await resp.text().catch(() => '');
-        return { statusCode: resp.status, body: `IPTV direct failed: ${resp.status} | ${body.slice(0, 300)}` };
+        return { statusCode: resp.status, body: `Stream unavailable (${resp.status})` };
       }
       m3u8 = await resp.text();
 
@@ -42,8 +41,7 @@ exports.handler = async (event) => {
         headers: { 'User-Agent': 'Mozilla/5.0', 'Accept': '*/*' },
       });
       if (authResp.status !== 302) {
-        const body = await authResp.text().catch(() => '');
-        return { statusCode: authResp.status, body: `Auth failed: HTTP ${authResp.status} | ${body.slice(0, 300)}` };
+          return { statusCode: authResp.status, body: `Auth failed (${authResp.status})` };
       }
       const location = authResp.headers.get('location') || '';
       if (!location) return { statusCode: 502, body: 'Auth: 302 sin Location header' };
@@ -58,8 +56,7 @@ exports.handler = async (event) => {
         headers: { 'User-Agent': 'Mozilla/5.0', 'Accept': '*/*' },
       });
       if (!m3u8Resp.ok) {
-        const body = await m3u8Resp.text().catch(() => '');
-        return { statusCode: m3u8Resp.status, body: `Media failed: HTTP ${m3u8Resp.status} | ${body.slice(0, 300)}` };
+        return { statusCode: m3u8Resp.status, body: `Media unavailable (${m3u8Resp.status})` };
       }
       m3u8 = await m3u8Resp.text();
       const finalBase = (m3u8Resp.url || cdnMediaUrl).replace(/\/[^/]*$/, '/');
@@ -67,7 +64,7 @@ exports.handler = async (event) => {
     }
 
     if (!m3u8 || !m3u8.includes('#EXTM3U')) {
-      return { statusCode: 502, body: `Respuesta no es m3u8 válido: ${(m3u8 || '').slice(0, 400)}` };
+      return { statusCode: 502, body: 'Invalid stream response' };
     }
 
     return {
@@ -81,7 +78,7 @@ exports.handler = async (event) => {
     };
 
   } catch (err) {
-    return { statusCode: 500, body: `Proxy error: ${err.message}` };
+    return { statusCode: 500, body: 'Proxy error' };
   }
 };
 
