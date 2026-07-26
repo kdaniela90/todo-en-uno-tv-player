@@ -1,40 +1,42 @@
-# Configuración de Netlify para Flutter Web
-# Netlify no tiene Flutter instalado, por eso el comando lo descarga primero.
-# Tiempo estimado de build: 4-6 minutos.
-
 [build]
-  command = "rm -rf flutter && git clone https://github.com/flutter/flutter.git -b stable --depth 1 && export PATH=\"$PATH:`pwd`/flutter/bin\" && flutter pub get && flutter build web --release"
-  publish = "build/web"
+  command = "echo 'Static web player — no build required'"
+  publish = "web"
+
+[dev]
+  publish = "web"
+  port = 9000
 
 [functions]
   directory = "netlify/functions"
 
-[build.environment]
-  FLUTTER_WEB_USE_SKIA = "true"
-
 # Proxy: redirige /xtream-api/* al servidor IPTV (evita CORS y mixed-content)
 [[redirects]]
   from = "/xtream-api/*"
-  to = "http://allinonestream.fans:8080/:splat"
+  to = "http://allinonestream.xyz:8080/:splat"
   status = 200
   force = true
 
 [[redirects]]
   from = "/xtream-live/*"
-  to = "http://allinonestream.fans:8080/live/:splat"
+  to = "http://allinonestream.xyz:8080/live/:splat"
   status = 200
   force = true
 
-# HLS segment proxy: los segmentos .ts referenciados en el .m3u8 pueden usar rutas relativas
 [[redirects]]
   from = "/xtream-chunks/*"
-  to = "http://allinonestream.fans:8080/:splat"
+  to = "http://allinonestream.xyz:8080/:splat"
   status = 200
   force = true
 
 [[redirects]]
   from = "/xtream-vod/*"
-  to = "http://allinonestream.fans:8080/movie/:splat"
+  to = "http://allinonestream.xyz:8080/movie/:splat"
+  status = 200
+  force = true
+
+[[redirects]]
+  from = "/xtream-series/*"
+  to = "http://allinonestream.xyz:8080/series/:splat"
   status = 200
   force = true
 
