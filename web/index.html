@@ -85,7 +85,7 @@ html, body { width: 100%; height: 100%; background: var(--bg); color: var(--text
 .login-err { color:#FF5C5C; font-size:12px; margin-top:10px; display:none; text-align:center; }
 
 /* ── APP SHELL ── */
-#screen-app { flex-direction: column; }
+#screen-app { flex-direction: column; z-index: 2; }
 
 /* ── TOPBAR ── */
 .topbar { display:flex; align-items:center; gap:16px; padding:14px 28px; border-bottom:1px solid var(--border); flex-shrink:0; background:var(--surface); }
@@ -164,17 +164,17 @@ html, body { width: 100%; height: 100%; background: var(--bg); color: var(--text
 .movie-meta { font-size:11px; color:var(--text-muted); margin-top:3px; }
 
 /* ── PLAYER ── */
-#screen-player { background:#000; }
-.player-overlay { position:absolute; inset:0; display:flex; align-items:center; justify-content:center; background:rgba(0,0,0,.5); z-index:5; }
+#screen-player { background:#000; position:fixed; inset:0; z-index:100; }
+.player-overlay { position:absolute; inset:0; display:flex; align-items:center; justify-content:center; background:rgba(0,0,0,.5); z-index:5; flex-direction:column; gap:16px; }
 .player-spinner { width:48px; height:48px; border-radius:50%; border:3px solid rgba(255,255,255,.2); border-top-color:var(--celeste); animation:spin .8s linear infinite; }
 @keyframes spin { to{transform:rotate(360deg);} }
-.player-top { display:flex; align-items:center; gap:12px; padding:12px 20px; background:rgba(0,0,0,.7); position:absolute; top:0; left:0; right:0; z-index:10; }
-.player-back { background:none; border:none; color:#fff; font-size:20px; cursor:pointer; padding:4px; width:32px; }
-.player-title { font-size:16px; font-weight:600; flex:1; }
-.player-actions { display:flex; gap:8px; flex-wrap:wrap; }
+.player-top { display:flex; align-items:center; gap:12px; padding:12px 20px; background:rgba(0,0,0,.7); position:absolute; top:0; left:0; right:0; z-index:10; min-height:52px; }
+.player-back { background:none; border:none; color:#fff; font-size:20px; cursor:pointer; padding:4px; width:32px; flex-shrink:0; }
+.player-title { font-size:16px; font-weight:600; flex:1; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; min-width:0; }
+.player-actions { display:flex; gap:8px; flex-shrink:0; }
 .player-act-btn { background:rgba(255,255,255,.15); border:none; color:#fff; border-radius:8px; padding:6px 14px; font-size:13px; cursor:pointer; font-family:'Poppins',sans-serif; transition:background .2s; display:flex; align-items:center; gap:6px; }
 .player-act-btn:hover { background:rgba(255,255,255,.25); }
-#player-video { width:100%; height:100%; object-fit:contain; background:#000; }
+#player-video { flex:1; width:100%; min-height:0; object-fit:contain; background:#000; display:block; }
 
 /* ── SEARCH ── */
 .mobile-search-row { display:none; margin-bottom:16px; }
@@ -295,6 +295,19 @@ html, body { width: 100%; height: 100%; background: var(--bg); color: var(--text
 .mv-picker-logo { width:40px; height:40px; border-radius:8px; object-fit:contain; background:var(--bg); flex-shrink:0; }
 .mv-picker-name { font-size:13px; font-weight:500; }
 
+/* ── MOBILE SEARCH FIELD (inside view-search, overrides topbar-search display:none on mobile) ── */
+.mobile-search-field { display:flex !important; align-items:center; gap:10px; background:var(--card); border:1px solid var(--border); border-radius:12px; padding:0 14px; width:100%; }
+.mobile-search-field i { color:var(--text-dim); font-size:14px; flex-shrink:0; }
+.mobile-search-field input { flex:1; background:none; border:none; color:var(--text); font-family:'Poppins',sans-serif; font-size:14px; padding:11px 0; outline:none; }
+.mobile-search-field input::placeholder { color:var(--text-dim); }
+
+/* ── MV AUDIO ── */
+.mv-cell.mv-audio-active { outline:3px solid var(--celeste); outline-offset:-3px; }
+.mv-audio-btn { position:absolute; bottom:8px; right:10px; background:rgba(0,0,0,.75); border:none; color:#fff; border-radius:50%; width:28px; height:28px; font-size:12px; cursor:pointer; display:none; align-items:center; justify-content:center; z-index:5; }
+.mv-cell:hover .mv-audio-btn { display:flex; }
+.mv-cell.mv-audio-active .mv-audio-btn { display:flex; background:var(--celeste); color:#000; }
+.mv-cell-err { position:absolute; inset:0; display:flex; flex-direction:column; align-items:center; justify-content:center; gap:8px; color:#FF9B9B; font-size:12px; background:rgba(0,0,0,.5); }
+
 /* ── SEC HEADER ── */
 .sec-header { display:flex; align-items:center; justify-content:space-between; margin-bottom:16px; }
 .sec-title { font-family:'ClashDisplay','Poppins',sans-serif; font-size:20px; font-weight:700; }
@@ -377,13 +390,14 @@ html, body { width: 100%; height: 100%; background: var(--bg); color: var(--text
   .content { padding:10px 14px; }
   .mobile-breadcrumb { padding:6px 14px 0; }
 }
-/* Player landscape: video a pantalla completa de facto */
+/* Player landscape */
 @media (orientation:landscape) and (max-height:500px) {
-  #screen-player { background:#000; }
-  #player-video { width:100%; height:100%; }
   .player-top { padding:6px 12px; }
   .player-title { font-size:13px; }
 }
+/* Fullscreen state */
+#screen-player:-webkit-full-screen { position:fixed; inset:0; width:100%; height:100%; }
+#screen-player:fullscreen { position:fixed; inset:0; width:100%; height:100%; }
 </style>
 </head>
 <body>
@@ -518,7 +532,7 @@ html, body { width: 100%; height: 100%; background: var(--bg); color: var(--text
     <!-- BUSQUEDA -->
     <div id="view-search" style="display:none">
       <div class="mobile-search-row" id="mobile-search-row">
-        <div class="topbar-search" style="width:100%;border-radius:12px">
+        <div class="mobile-search-field">
           <i class="fa-solid fa-magnifying-glass"></i>
           <input type="text" placeholder="Buscar canales, películas, series..."
                  id="mobile-search-input" oninput="onTopbarSearch(this.value)" autocomplete="off">
@@ -564,6 +578,7 @@ html, body { width: 100%; height: 100%; background: var(--bg); color: var(--text
           <button class="pin-key" onclick="pinKey('ok')" style="background:var(--celeste);color:var(--bg)"><i class="fa-solid fa-check"></i></button>
         </div>
         <div class="pin-err" id="parental-err">PIN incorrecto</div>
+        <button onclick="resetPinToDefault()" style="background:none;border:none;color:var(--text-muted);font-size:12px;cursor:pointer;margin-top:12px;font-family:'Poppins',sans-serif;text-decoration:underline">¿Olvidaste tu PIN? Restablecer</button>
       </div>
       <div id="parental-content-screen" style="display:none">
         <div class="sec-header">
@@ -652,7 +667,7 @@ html, body { width: 100%; height: 100%; background: var(--bg); color: var(--text
       </button>
     </div>
   </div>
-  <video id="player-video" controls playsinline></video>
+  <video id="player-video" controls playsinline webkit-playsinline></video>
 </div>
 
 <!-- MODAL -->
@@ -684,6 +699,7 @@ const S = {
   creds:null, liveCategories:[], liveStreams:[], movieCategories:[], movies:[],
   seriesCategories:[], seriesList:[], currentSection:'hub', currentPlayer:null,
   pinBuffer:'', parentalPin:'1234', blockedCats:new Set(), mvLayout:2, mvHls:[],
+  mvChannels:[], mvAudioSlot:-1,
   mvSlotTarget:-1, searchFilter:'all', searchDebounce:null, myList:[],
   parentalUnlocked:false, liveCatActive:'all', movieCatActive:'all', seriesCatActive:'all',
 };
@@ -1003,9 +1019,17 @@ function loadVod(videoEl,url){
 }
 function toggleFullscreen(){
   const v=document.getElementById('player-video');
-  if(v.webkitEnterFullscreen){v.webkitEnterFullscreen();return;}
-  if(document.fullscreenElement){document.exitFullscreen&&document.exitFullscreen();}
-  else{(v.requestFullscreen||v.webkitRequestFullscreen||function(){}).call(v);}
+  const ps=document.getElementById('screen-player');
+  const isFs=!!(document.fullscreenElement||document.webkitFullscreenElement||document.mozFullScreenElement);
+  if(isFs){
+    (document.exitFullscreen||document.webkitExitFullscreen||document.mozCancelFullScreen||function(){}).call(document);
+    return;
+  }
+  // iOS Safari: use native video fullscreen
+  if(typeof v.webkitEnterFullscreen==='function'){v.webkitEnterFullscreen();return;}
+  // Standard API: fullscreen on the player container for best UX
+  const req=ps.requestFullscreen||ps.webkitRequestFullscreen||ps.mozRequestFullScreen||v.requestFullscreen||v.webkitRequestFullscreen;
+  if(req){req.call(ps.requestFullscreen||ps.webkitRequestFullscreen||ps.mozRequestFullScreen?ps:v).catch(()=>{});}
 }
 
 // ── MY LIST ──
@@ -1040,6 +1064,7 @@ function showParentalContent(){
 }
 function toggleBlock(id,btn){if(S.blockedCats.has(id)){S.blockedCats.delete(id);btn.classList.remove('on');}else{S.blockedCats.add(id);btn.classList.add('on');}localStorage.setItem('teutv_blocked_cats',JSON.stringify([...S.blockedCats]));}
 function lockParental(){S.parentalUnlocked=false;_pin='';renderParental();}
+function resetPinToDefault(){if(!confirm('¿Restablecer PIN a 1234?'))return;localStorage.removeItem('teutv_pin');S.parentalPin='1234';_pin='';document.getElementById('parental-err').style.display='none';updatePinDots();showToast('PIN restablecido a 1234');}
 function changeParentalPin(){
   const overlay=document.createElement('div');
   overlay.style.cssText='position:fixed;inset:0;background:rgba(0,0,0,.75);z-index:500;display:flex;align-items:center;justify-content:center;';
@@ -1068,25 +1093,97 @@ function confirmNewPin(){
 
 // ── MULTIVIEW ──
 function renderMultiview(){
-  const n=S.mvLayout,grid=document.getElementById('mv-grid');grid.className=`mv-grid layout-${n}`;grid.innerHTML='';
-  for(let i=0;i<n;i++){const cell=document.createElement('div');cell.className='mv-cell';cell.id=`mv-cell-${i}`;cell.innerHTML=`<div class="mv-cell-overlay"><span class="mv-empty-icon"><i class="fa-solid fa-tv"></i></span><button class="mv-add-btn" onclick="openMvPicker(${i})"><i class="fa-solid fa-plus"></i> Agregar canal</button></div>`;grid.appendChild(cell);}
+  const n=S.mvLayout,grid=document.getElementById('mv-grid');
+  // If layout hasn't changed and cells already built, preserve running HLS streams
+  if(grid.className===`mv-grid layout-${n}` && grid.children.length===n){
+    for(let i=0;i<n;i++){const c=document.getElementById(`mv-cell-${i}`);if(c)c.classList.toggle('mv-audio-active',i===S.mvAudioSlot);}
+    return;
+  }
+  // Destroy HLS instances that won't fit the new layout
+  for(let i=n;i<S.mvHls.length;i++){if(S.mvHls[i]){S.mvHls[i].destroy();S.mvHls[i]=null;}S.mvChannels[i]=null;}
+  grid.className=`mv-grid layout-${n}`;
+  grid.innerHTML='';
+  for(let i=0;i<n;i++){
+    const cell=document.createElement('div');cell.className='mv-cell';cell.id=`mv-cell-${i}`;
+    const ch=S.mvChannels[i];
+    if(ch){_buildMvCell(cell,i,ch.id,ch.name);}
+    else{cell.innerHTML=`<div class="mv-cell-overlay"><span class="mv-empty-icon"><i class="fa-solid fa-tv"></i></span><button class="mv-add-btn" onclick="openMvPicker(${i})"><i class="fa-solid fa-plus"></i> Agregar canal</button></div>`;}
+    grid.appendChild(cell);
+  }
+  if(S.mvAudioSlot>=0&&S.mvAudioSlot<n){document.getElementById(`mv-cell-${S.mvAudioSlot}`)?.classList.add('mv-audio-active');}
 }
-function setMvLayout(n){S.mvLayout=n;document.getElementById('mv-btn-2').classList.toggle('active',n===2);document.getElementById('mv-btn-4').classList.toggle('active',n===4);closeMvAll();renderMultiview();}
-function closeMvAll(){S.mvHls.forEach(h=>{if(h)h.destroy();});S.mvHls=[];}
+function _buildMvCell(cell,slot,id,name){
+  const url=`/.netlify/functions/hls-proxy?u=${enc(S.creds.username)}&p=${enc(S.creds.password)}&id=${id}`;
+  const vid=document.createElement('video');
+  vid.style.cssText='width:100%;height:100%;object-fit:contain;display:block;';
+  vid.muted=true;vid.autoplay=true;
+  vid.setAttribute('playsinline','');vid.setAttribute('webkit-playsinline','');
+  cell.innerHTML='';cell.appendChild(vid);
+  // Audio button
+  const audioBtn=document.createElement('button');audioBtn.className='mv-audio-btn';
+  audioBtn.innerHTML='<i class="fa-solid fa-volume-xmark"></i>';
+  audioBtn.title='Activar audio';
+  audioBtn.onclick=(e)=>{e.stopPropagation();mvSelectAudio(slot);};
+  cell.appendChild(audioBtn);
+  // Close button
+  const closeBtn=document.createElement('button');closeBtn.className='mv-cell-close';closeBtn.innerHTML='<i class="fa-solid fa-xmark"></i>';closeBtn.onclick=(e)=>{e.stopPropagation();clearMvSlot(slot);};cell.appendChild(closeBtn);
+  // Label
+  const label=document.createElement('div');label.className='mv-cell-label';label.textContent=name;cell.appendChild(label);
+  // Click cell = select audio
+  cell.onclick=()=>mvSelectAudio(slot);
+  // Load HLS
+  if(S.mvHls[slot]){S.mvHls[slot].destroy();S.mvHls[slot]=null;}
+  if(Hls.isSupported()){
+    const h=new Hls({enableWorker:false,lowLatencyMode:true,xhrSetup:(xhr)=>{xhr.timeout=20000;}});
+    h.loadSource(url);h.attachMedia(vid);
+    h.on(Hls.Events.MANIFEST_PARSED,()=>{vid.play().catch(()=>{});});
+    h.on(Hls.Events.ERROR,(_,d)=>{
+      if(d.fatal){
+        const err=document.createElement('div');err.className='mv-cell-err';
+        err.innerHTML='<i class="fa-solid fa-circle-exclamation"></i><span>Error al cargar</span><button onclick="event.stopPropagation();_rebuildMvSlot('+slot+')" style="background:var(--celeste);border:none;color:#000;border-radius:99px;padding:4px 12px;font-size:11px;cursor:pointer;font-family:Poppins,sans-serif">Reintentar</button>';
+        // Only add error if cell still exists
+        const c=document.getElementById(`mv-cell-${slot}`);if(c&&c.querySelector('video')===vid)c.appendChild(err);
+      }
+    });
+    S.mvHls[slot]=h;
+  } else if(vid.canPlayType('application/vnd.apple.mpegurl')){
+    vid.src=url;vid.addEventListener('loadedmetadata',()=>vid.play().catch(()=>{}),{once:true});S.mvHls[slot]=null;
+  }
+  // Apply muted state based on current audio slot
+  vid.muted=(S.mvAudioSlot!==slot);
+  if(S.mvAudioSlot===slot){cell.classList.add('mv-audio-active');audioBtn.innerHTML='<i class="fa-solid fa-volume-high"></i>';}
+}
+function mvSelectAudio(slot){
+  S.mvAudioSlot=slot;
+  const n=S.mvLayout;
+  for(let i=0;i<n;i++){
+    const c=document.getElementById(`mv-cell-${i}`);if(!c)continue;
+    const vid=c.querySelector('video');const btn=c.querySelector('.mv-audio-btn');
+    const active=(i===slot);
+    if(vid)vid.muted=!active;
+    c.classList.toggle('mv-audio-active',active);
+    if(btn)btn.innerHTML=active?'<i class="fa-solid fa-volume-high"></i>':'<i class="fa-solid fa-volume-xmark"></i>';
+  }
+}
+function _rebuildMvSlot(slot){const ch=S.mvChannels[slot];if(!ch)return;const cell=document.getElementById(`mv-cell-${slot}`);if(cell)_buildMvCell(cell,slot,ch.id,ch.name);}
+function setMvLayout(n){S.mvLayout=n;document.getElementById('mv-btn-2').classList.toggle('active',n===2);document.getElementById('mv-btn-4').classList.toggle('active',n===4);renderMultiview();}
+function closeMvAll(){S.mvHls.forEach(h=>{if(h)h.destroy();});S.mvHls=[];S.mvChannels=[];S.mvAudioSlot=-1;renderMultiview();}
 function openMvPicker(slot){S.mvSlotTarget=slot;document.getElementById('mv-picker-list').innerHTML=S.liveStreams.slice(0,300).map(ch=>`<div class="mv-picker-item" onclick="selectMvChannel(${ch.stream_id},'${esc(ch.name)}','${esc(ch.stream_icon||'')}')"><img class="mv-picker-logo" src="${esc(ch.stream_icon||'')}" onerror="this.style.display='none'" loading="lazy"><span class="mv-picker-name">${esc(ch.name)}</span></div>`).join('');document.getElementById('mv-picker').classList.add('open');}
 function filterMvPicker(q){document.getElementById('mv-picker-list').innerHTML=S.liveStreams.filter(ch=>ch.name&&ch.name.toLowerCase().includes(q.toLowerCase())).slice(0,100).map(ch=>`<div class="mv-picker-item" onclick="selectMvChannel(${ch.stream_id},'${esc(ch.name)}','${esc(ch.stream_icon||'')}')"><img class="mv-picker-logo" src="${esc(ch.stream_icon||'')}" onerror="this.style.display='none'" loading="lazy"><span class="mv-picker-name">${esc(ch.name)}</span></div>`).join('');}
-function selectMvChannel(id,name,icon){
-  closeMvPicker();const slot=S.mvSlotTarget,cell=document.getElementById(`mv-cell-${slot}`);if(!cell)return;
-  const url=`/.netlify/functions/hls-proxy?u=${enc(S.creds.username)}&p=${enc(S.creds.password)}&id=${id}`;
-  const vid=document.createElement('video');vid.style.cssText='width:100%;height:100%;object-fit:contain;';vid.muted=true;vid.autoplay=true;vid.playsinline=true;
-  cell.innerHTML='';cell.appendChild(vid);
-  const close=document.createElement('button');close.className='mv-cell-close';close.innerHTML='<i class="fa-solid fa-xmark"></i>';close.onclick=()=>clearMvSlot(slot);cell.appendChild(close);
-  const label=document.createElement('div');label.className='mv-cell-label';label.textContent=name;cell.appendChild(label);
-  if(S.mvHls[slot])S.mvHls[slot].destroy();
-  if(Hls.isSupported()){const h=new Hls({enableWorker:false,lowLatencyMode:true,xhrSetup:(xhr)=>{xhr.timeout=20000;}});h.loadSource(url);h.attachMedia(vid);h.on(Hls.Events.MANIFEST_PARSED,()=>vid.play().catch(()=>{}));h.on(Hls.Events.ERROR,(_,d)=>{if(d.fatal)console.warn('MV HLS error',d);});S.mvHls[slot]=h;}
-  else if(vid.canPlayType('application/vnd.apple.mpegurl')){vid.src=url;vid.addEventListener('loadedmetadata',()=>vid.play().catch(()=>{}),{once:true});S.mvHls[slot]=null;}
+function selectMvChannel(id,name){
+  closeMvPicker();
+  const slot=S.mvSlotTarget;
+  const cell=document.getElementById(`mv-cell-${slot}`);if(!cell)return;
+  S.mvChannels[slot]={id,name};
+  _buildMvCell(cell,slot,id,name);
 }
-function clearMvSlot(slot){if(S.mvHls[slot]){S.mvHls[slot].destroy();S.mvHls[slot]=null;}const cell=document.getElementById(`mv-cell-${slot}`);if(cell)cell.innerHTML=`<div class="mv-cell-overlay"><span class="mv-empty-icon"><i class="fa-solid fa-tv"></i></span><button class="mv-add-btn" onclick="openMvPicker(${slot})"><i class="fa-solid fa-plus"></i> Agregar canal</button></div>`;}
+function clearMvSlot(slot){
+  if(S.mvHls[slot]){S.mvHls[slot].destroy();S.mvHls[slot]=null;}
+  S.mvChannels[slot]=null;
+  if(S.mvAudioSlot===slot)S.mvAudioSlot=-1;
+  const cell=document.getElementById(`mv-cell-${slot}`);
+  if(cell){cell.className='mv-cell';cell.onclick=null;cell.innerHTML=`<div class="mv-cell-overlay"><span class="mv-empty-icon"><i class="fa-solid fa-tv"></i></span><button class="mv-add-btn" onclick="openMvPicker(${slot})"><i class="fa-solid fa-plus"></i> Agregar canal</button></div>`;}
+}
 function closeMvPickerOverlay(e){if(e.target===document.getElementById('mv-picker'))closeMvPicker();}
 function closeMvPicker(){document.getElementById('mv-picker').classList.remove('open');document.getElementById('mv-picker-input').value='';}
 
