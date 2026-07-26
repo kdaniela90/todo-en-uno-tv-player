@@ -18,7 +18,7 @@
     Referrer-Policy = "no-referrer"
     Permissions-Policy = "camera=(), microphone=(), geolocation=(), payment=()"
     # connect-src 'self' ensures any injected script cannot exfiltrate data to external hosts
-    Content-Security-Policy = "default-src 'self' 'unsafe-inline'; script-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net https://cdnjs.cloudflare.com; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com https://cdnjs.cloudflare.com; font-src https://fonts.gstatic.com https://cdnjs.cloudflare.com data:; img-src * data: blob:; media-src * blob:; connect-src 'self'; worker-src blob:; frame-ancestors 'none'; base-uri 'self';"
+    Content-Security-Policy = "default-src 'self' 'unsafe-inline'; script-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net https://cdnjs.cloudflare.com; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com https://cdnjs.cloudflare.com; font-src 'self' https://fonts.gstatic.com https://cdnjs.cloudflare.com data:; img-src * data: blob:; media-src * blob:; connect-src 'self'; worker-src blob:; frame-ancestors 'none'; base-uri 'self';"
 
 # ── Proxy redirects (server URLs kept server-side only) ───────────────────────
 [[redirects]]
