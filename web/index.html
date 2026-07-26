@@ -2,7 +2,9 @@
 <html lang="es">
 <head>
 <meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
 <title>TEUTV Player</title>
 <link rel="manifest" href="manifest.json">
 <link rel="icon" href="favicon.png">
@@ -60,6 +62,7 @@ html, body { width: 100%; height: 100%; background: var(--bg); color: var(--text
               radial-gradient(ellipse at 70% 50%,rgba(116,38,239,.12) 0%,transparent 60%),
               var(--bg);
   align-items:center; justify-content:center; padding:24px;
+  overflow-y:auto; padding-top:max(24px, env(safe-area-inset-top));
 }
 .login-wrap { display:grid; grid-template-columns:1fr 1fr; width:100%; max-width:900px; background:var(--surface); border-radius:24px; overflow:hidden; border:1px solid var(--border); box-shadow:var(--shadow); }
 .login-left { background:var(--bg); display:flex; flex-direction:column; align-items:center; justify-content:center; padding:48px 32px; text-align:center; position:relative; overflow:hidden; border-right:1px solid var(--border); }
@@ -88,7 +91,7 @@ html, body { width: 100%; height: 100%; background: var(--bg); color: var(--text
 #screen-app { flex-direction: column; z-index: 2; }
 
 /* ── TOPBAR ── */
-.topbar { display:flex; align-items:center; gap:16px; padding:14px 28px; border-bottom:1px solid var(--border); flex-shrink:0; background:var(--surface); }
+.topbar { display:flex; align-items:center; gap:16px; padding:14px 28px; padding-top:max(14px, env(safe-area-inset-top)); border-bottom:1px solid var(--border); flex-shrink:0; background:var(--surface); }
 .topbar-logo { display:flex; align-items:center; gap:10px; cursor:pointer; text-decoration:none; flex-shrink:0; }
 .topbar-logo-canvas { border-radius:10px; display:block; flex-shrink:0; }
 .topbar-wordmark { font-family:'ClashDisplay','Poppins',sans-serif; font-size:17px; font-weight:700; letter-spacing:.02em; color:#fff; line-height:1; }
@@ -352,7 +355,12 @@ html, body { width: 100%; height: 100%; background: var(--bg); color: var(--text
   /* Prevent iOS auto-zoom on input focus (requires font-size >= 16px) */
   input, select, textarea { font-size:16px !important; }
   .login-wrap { grid-template-columns:1fr; }
-  .login-left { padding:32px 24px; border-right:none; border-bottom:1px solid var(--border); }
+  .login-left { padding:24px 24px 20px; border-right:none; border-bottom:1px solid var(--border); }
+  .login-left-canvas { width:74px !important; height:148px !important; }
+  .login-left h2 { font-size:22px; margin-top:10px; }
+  .wm-sub-login { font-size:.85rem; }
+  .login-left>p { font-size:12px; margin-top:6px; }
+  .login-right { padding:28px 24px 32px; }
   .hub-grid { grid-template-columns:repeat(2,1fr); gap:14px; }
   .hub-card { padding:20px 16px; }
   .hub-card-icon { width:56px; height:56px; font-size:22px; }
@@ -399,13 +407,15 @@ html, body { width: 100%; height: 100%; background: var(--bg); color: var(--text
 
 /* ── LANDSCAPE MÓVIL (phones & small tablets in landscape) ── */
 @media (orientation:landscape) and (max-height:600px) {
-  /* Breadcrumb nunca se muestra en landscape — evita espacio extra en iPhone SE (667px) */
+  /* Breadcrumb nunca se muestra en landscape */
   .mobile-breadcrumb { display:none !important; }
-  /* Topbar: siempre usa icono de búsqueda, nunca la barra completa (evita que inflé la altura a 46px) */
+  /* Topbar: siempre usa icono de búsqueda, nunca la barra completa */
   .topbar-search { display:none !important; }
   .topbar-search-icon-btn { display:flex !important; }
+  /* En landscape + multiview activo: ocultar topbar para maximizar área de video */
+  #screen-app.mv-active .topbar { display:none !important; }
   /* Topbar compacto — altura total ≈ 34px (26px canvas + 8px padding) */
-  .topbar { padding:4px 10px; gap:8px; }
+  .topbar { padding:4px 10px; gap:8px; padding-top:max(4px, env(safe-area-inset-top)); }
   .topbar-logo-canvas { height:26px !important; width:auto !important; }
   .topbar-wordmark { font-size:12px; }
   .topbar-settings-btn { padding:4px; font-size:15px; }
@@ -893,8 +903,9 @@ function showSection(sec){
   if(ml){ml.textContent=TITLES[sec]||'';}
 
   const mv=document.getElementById('view-multiview'),content=document.getElementById('main-content');
-  if(sec==='multiview'){content.style.display='none';mv.style.display='flex';}
-  else{content.style.display='';mv.style.display='none';ALL_VIEWS.forEach(v=>{const el=document.getElementById('view-'+v);if(el)el.style.display=v===sec?'':'none';});}
+  const appEl=document.getElementById('screen-app');
+  if(sec==='multiview'){content.style.display='none';mv.style.display='flex';appEl.classList.add('mv-active');}
+  else{content.style.display='';mv.style.display='none';appEl.classList.remove('mv-active');ALL_VIEWS.forEach(v=>{const el=document.getElementById('view-'+v);if(el)el.style.display=v===sec?'':'none';});}
 
   if(sec==='live')renderLive();
   if(sec==='movies')renderMovies();
@@ -1336,17 +1347,17 @@ function _buildMvCell(cell,slot,id,name){
   vid.muted=!isAudio;
   if(isAudio){cell.classList.add('mv-audio-active');audioBtn.innerHTML='<i class="fa-solid fa-volume-high"></i>';}
 
-  // Stagger by addition order (not slot number) so the first channel added starts first
-  const delay=_mvAddOrder*1200;
+  // Stagger by addition order so the first channel added starts first; 2s apart to avoid IPTV rate-limit
+  const delay=_mvAddOrder*2000;
   _mvAddOrder++;
   _mvTimers[slot]=setTimeout(()=>{
     _mvTimers[slot]=null;
     const stillHere=document.getElementById(`mv-cell-${slot}`);
     if(!stillHere||stillHere.querySelector('video')!==vid)return; // Cell replaced, abort
-    _startMvHls(vid,url,slot);
+    _startMvHls(vid,url,slot,0);
   },delay);
 }
-function _startMvHls(vid,url,slot){
+function _startMvHls(vid,url,slot,retryCount){
   if(Hls.isSupported()){
     const h=new Hls({
       enableWorker:false,
@@ -1354,22 +1365,34 @@ function _startMvHls(vid,url,slot){
       maxBufferLength:8,
       maxMaxBufferLength:16,
       startLevel:-1,
-      fragLoadingTimeOut:25000,
-      manifestLoadingTimeOut:25000,
-      levelLoadingTimeOut:25000,
+      fragLoadingTimeOut:30000,
+      manifestLoadingTimeOut:30000,
+      levelLoadingTimeOut:30000,
+      fragLoadingMaxRetry:3,
+      manifestLoadingMaxRetry:2,
+      levelLoadingMaxRetry:2,
     });
     h.loadSource(url);h.attachMedia(vid);
     h.on(Hls.Events.MANIFEST_PARSED,()=>{vid.play().catch(()=>{});});
     h.on(Hls.Events.ERROR,(_,d)=>{
       if(d.fatal){
-        const c=document.getElementById(`mv-cell-${slot}`);
-        if(c&&c.querySelector('video')===vid){
-          const existing=c.querySelector('.mv-cell-err');if(existing)existing.remove();
-          const err=document.createElement('div');err.className='mv-cell-err';
-          err.innerHTML=`<i class="fa-solid fa-circle-exclamation"></i><span>Sin señal</span><button onclick="event.stopPropagation();_rebuildMvSlot(${slot})" style="background:var(--celeste);border:none;color:#000;border-radius:99px;padding:5px 14px;font-size:12px;cursor:pointer;font-family:Poppins,sans-serif;font-weight:600">Reintentar</button>`;
-          c.appendChild(err);
-        }
         h.destroy();if(S.mvHls[slot]===h)S.mvHls[slot]=null;
+        const c=document.getElementById(`mv-cell-${slot}`);
+        if(!c||c.querySelector('video')!==vid)return;
+        // Auto-retry once after 6s before showing error UI
+        if(retryCount<1){
+          _mvTimers[slot]=setTimeout(()=>{
+            _mvTimers[slot]=null;
+            const still=document.getElementById(`mv-cell-${slot}`);
+            if(!still||still.querySelector('video')!==vid)return;
+            _startMvHls(vid,url,slot,retryCount+1);
+          },6000);
+          return;
+        }
+        const existing=c.querySelector('.mv-cell-err');if(existing)existing.remove();
+        const err=document.createElement('div');err.className='mv-cell-err';
+        err.innerHTML=`<i class="fa-solid fa-circle-exclamation"></i><span>Sin señal</span><button onclick="event.stopPropagation();_rebuildMvSlot(${slot})" style="background:var(--celeste);border:none;color:#000;border-radius:99px;padding:5px 14px;font-size:12px;cursor:pointer;font-family:Poppins,sans-serif;font-weight:600">Reintentar</button>`;
+        c.appendChild(err);
       }
     });
     S.mvHls[slot]=h;
@@ -1378,11 +1401,18 @@ function _startMvHls(vid,url,slot){
     vid.addEventListener('loadedmetadata',()=>vid.play().catch(()=>{}),{once:true});
     vid.addEventListener('error',()=>{
       const c=document.getElementById(`mv-cell-${slot}`);
-      if(c&&c.querySelector('video')===vid){
-        const err=document.createElement('div');err.className='mv-cell-err';
-        err.innerHTML=`<i class="fa-solid fa-circle-exclamation"></i><span>Sin señal</span><button onclick="event.stopPropagation();_rebuildMvSlot(${slot})" style="background:var(--celeste);border:none;color:#000;border-radius:99px;padding:5px 14px;font-size:12px;cursor:pointer;font-family:Poppins,sans-serif;font-weight:600">Reintentar</button>`;
-        c.appendChild(err);
+      if(!c||c.querySelector('video')!==vid)return;
+      if(retryCount<1){
+        setTimeout(()=>{
+          const still=document.getElementById(`mv-cell-${slot}`);
+          if(!still||still.querySelector('video')!==vid)return;
+          _startMvHls(vid,url,slot,retryCount+1);
+        },6000);
+        return;
       }
+      const err=document.createElement('div');err.className='mv-cell-err';
+      err.innerHTML=`<i class="fa-solid fa-circle-exclamation"></i><span>Sin señal</span><button onclick="event.stopPropagation();_rebuildMvSlot(${slot})" style="background:var(--celeste);border:none;color:#000;border-radius:99px;padding:5px 14px;font-size:12px;cursor:pointer;font-family:Poppins,sans-serif;font-weight:600">Reintentar</button>`;
+      c.appendChild(err);
     },{once:true});
     S.mvHls[slot]=null;
   }
