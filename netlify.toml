@@ -68,3 +68,9 @@
   to = "http://23.237.74.2/:splat"
   status = 200
   force = true
+
+[[redirects]]
+  from = "/xtream-stream-hls/*"
+  to = "http://216.106.177.68/:splat"
+  status = 200
+  force = true
