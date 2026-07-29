@@ -886,15 +886,26 @@ async function apiFetch(action,extra){const r=await fetch(apiUrl(action,extra));
 // Live channel data store — avoids embedding name/icon strings inside onclick attributes
 const _liveStore={};
 async function fetchAllData(){
+  // ── Fase 1: canales en vivo — carga primero para mostrar en ~2s ────────────
   try{
-    const[lc,ls,mc,mv,sc,sv]=await Promise.all([apiFetch('get_live_categories'),apiFetch('get_live_streams'),apiFetch('get_vod_categories'),apiFetch('get_vod_streams'),apiFetch('get_series_categories'),apiFetch('get_series')]);
-    S.liveCategories=Array.isArray(lc)?lc:[];S.liveStreams=Array.isArray(ls)?ls:[];
+    const[lc,ls]=await Promise.all([apiFetch('get_live_categories'),apiFetch('get_live_streams')]);
+    S.liveCategories=Array.isArray(lc)?lc:[];
+    S.liveStreams=Array.isArray(ls)?ls:[];
+    // Guardar en caché para la próxima visita (TTL 25 min)
+    try{
+      const ck='teutv_live_'+(S.creds&&S.creds.username||'');
+      sessionStorage.setItem(ck,JSON.stringify({ts:Date.now(),lc:S.liveCategories,ls:S.liveStreams}));
+    }catch{}
+    if(S.currentSection==='live')renderLive();
+  }catch(e){console.error('fetchAllData:live',e);}
+  // ── Fase 2: películas y series — cargan en background ─────────────────────
+  try{
+    const[mc,mv,sc,sv]=await Promise.all([apiFetch('get_vod_categories'),apiFetch('get_vod_streams'),apiFetch('get_series_categories'),apiFetch('get_series')]);
     S.movieCategories=Array.isArray(mc)?mc:[];S.movies=Array.isArray(mv)?mv:[];
     S.seriesCategories=Array.isArray(sc)?sc:[];S.seriesList=Array.isArray(sv)?sv:[];
-    if(S.currentSection==='live')renderLive();
     if(S.currentSection==='movies')renderMovies();
     if(S.currentSection==='series')renderSeries();
-  }catch(e){console.error('fetchAllData',e);}
+  }catch(e){console.error('fetchAllData:vod',e);}
 }
 
 // ── TOPBAR SEARCH ──
@@ -1286,7 +1297,7 @@ function _doLoadHls(videoEl,url,myToken,retryCount){
       backBufferLength:30,
       manifestLoadingTimeOut:12000,
       levelLoadingTimeOut:12000,
-      fragLoadingTimeOut:20000,
+      fragLoadingTimeOut:8000,
       manifestLoadingMaxRetry:0,
       levelLoadingMaxRetry:2,
       fragLoadingMaxRetry:3,
@@ -1459,37 +1470,30 @@ function confirmNewPin(){
 // ── MULTIVIEW ──
 function renderMultiview(){
   const n=S.mvLayout,grid=document.getElementById('mv-grid');
-  // Si layout y conteo de celdas no cambiaron, solo sincronizar clases de audio
+  // If layout hasn't changed and cells already built, preserve running HLS streams
   if(grid.className===`mv-grid layout-${n}` && grid.children.length===n){
     for(let i=0;i<n;i++){const c=document.getElementById(`mv-cell-${i}`);if(c)c.classList.toggle('mv-audio-active',i===S.mvAudioSlot);}
     return;
   }
-  // Destruir HLS de slots que ya no caben (layout se redujo)
+  // Destroy HLS instances that won't fit the new layout
   for(let i=n;i<S.mvHls.length;i++){if(S.mvHls[i]){S.mvHls[i].destroy();S.mvHls[i]=null;}S.mvChannels[i]=null;}
   grid.className=`mv-grid layout-${n}`;
-  // Eliminar celdas sobrantes del DOM sin tocar las que permanecen
-  while(grid.children.length>n) grid.removeChild(grid.lastChild);
-  // Agregar SOLO las celdas nuevas — las existentes con HLS corriendo se preservan intactas
+  grid.innerHTML='';
   for(let i=0;i<n;i++){
-    if(document.getElementById(`mv-cell-${i}`)){
-      // Celda ya existe → solo sincronizar clase de audio, HLS sigue corriendo
-      document.getElementById(`mv-cell-${i}`).classList.toggle('mv-audio-active',i===S.mvAudioSlot);
-      continue;
-    }
     const cell=document.createElement('div');cell.className='mv-cell';cell.id=`mv-cell-${i}`;
     const ch=S.mvChannels[i];
     if(ch){_buildMvCell(cell,i,ch.id,ch.name);}
     else{cell.innerHTML=`<div class="mv-cell-overlay"><span class="mv-empty-icon"><i class="fa-solid fa-tv"></i></span><button class="mv-add-btn" onclick="openMvPicker(${i})"><i class="fa-solid fa-plus"></i> Agregar canal</button></div>`;}
     grid.appendChild(cell);
   }
+  if(S.mvAudioSlot>=0&&S.mvAudioSlot<n){document.getElementById(`mv-cell-${S.mvAudioSlot}`)?.classList.add('mv-audio-active');}
 }
 const _mvTimers={};
-// Stagger queue: streams inician con 800ms de separación entre ellos.
-// No espera MANIFEST_PARSED — evita bloquear streams nuevos por mucho tiempo.
+// Sequential queue: one HLS stream starts at a time, next begins only after MANIFEST_PARSED or error
 const _mvQueue=[];
 let _mvQueueBusy=false;
 function _mvEnqueue(vid,url,slot,retry){
-  // Eliminar cualquier entrada pendiente del mismo slot
+  // Remove any existing pending entry for this slot
   for(let i=_mvQueue.length-1;i>=0;i--){if(_mvQueue[i].slot===slot)_mvQueue.splice(i,1);}
   _mvQueue.push({vid,url,slot,retry:retry||0});
   _mvDrainQueue();
@@ -1499,14 +1503,16 @@ function _mvDrainQueue(){
   _mvQueueBusy=true;
   const item=_mvQueue.shift();
   const {vid,url,slot,retry}=item;
-  const c=document.getElementById('mv-cell-'+slot);
+  // Verify slot still valid before starting
+  const c=document.getElementById(`mv-cell-${slot}`);
   if(!c||c.querySelector('video')!==vid){_mvQueueBusy=false;_mvDrainQueue();return;}
   _startMvHls(vid,url,slot,retry);
-  // Stagger: liberar la cola 800ms después sin esperar confirmación del stream
-  if(_mvTimers['__q']){clearTimeout(_mvTimers['__q']);}
-  _mvTimers['__q']=setTimeout(()=>{_mvTimers['__q']=null;_mvQueueBusy=false;_mvDrainQueue();},800);
 }
-function _mvQueueDone(delay){}  // no-op: stagger no depende de MANIFEST_PARSED
+function _mvQueueDone(delay){
+  // Release queue lock after delay so next stream doesn't hammer server
+  if(_mvTimers['__q']){clearTimeout(_mvTimers['__q']);}
+  _mvTimers['__q']=setTimeout(()=>{_mvTimers['__q']=null;_mvQueueBusy=false;_mvDrainQueue();},delay||2000);
+}
 function _buildMvCell(cell,slot,id,name){
   const url=`/.netlify/functions/hls-proxy?u=${enc(S.creds.username)}&p=${enc(S.creds.password)}&id=${id}`;
   // Cancel any pending timer for this slot
@@ -1544,69 +1550,78 @@ function _buildMvCell(cell,slot,id,name){
 }
 function _startMvHls(vid,url,slot,retryCount){
   if(Hls.isSupported()){
-    let _mediaRecovered=false;
     const h=new Hls({
       enableWorker:false,
       lowLatencyMode:false,
       maxBufferLength:8,
       maxMaxBufferLength:16,
       startLevel:-1,
-      fragLoadingTimeOut:20000,
+      fragLoadingTimeOut:8000,
       manifestLoadingTimeOut:12000,
       levelLoadingTimeOut:12000,
-      fragLoadingMaxRetry:5,
-      manifestLoadingMaxRetry:2,
-      levelLoadingMaxRetry:3,
+      fragLoadingMaxRetry:3,
+      manifestLoadingMaxRetry:1,
+      levelLoadingMaxRetry:2,
       loader:_makeHlsLoader(),
     });
+    let _mediaRecovered=false;
     h.loadSource(url);h.attachMedia(vid);
     h.on(Hls.Events.MANIFEST_PARSED,()=>{
       vid.play().catch(()=>{});
+      // Stream confirmed — allow next stream to start after 2s gap
+      _mvQueueDone(2000);
     });
     h.on(Hls.Events.ERROR,(_,d)=>{
-      if(!d.fatal)return;
-      // Intentar recuperar errores de media antes de destruir
-      if(d.type===Hls.ErrorTypes.MEDIA_ERROR&&!_mediaRecovered){
-        _mediaRecovered=true;
-        h.recoverMediaError();
+      if(!d.fatal){
+        // Non-fatal network stall: nudge HLS to reload without killing the stream
+        if(d.type===Hls.ErrorTypes.NETWORK_ERROR) h.startLoad();
         return;
       }
+      // Fatal error
+      if(d.type===Hls.ErrorTypes.MEDIA_ERROR&&!_mediaRecovered){
+        _mediaRecovered=true; h.recoverMediaError(); return;
+      }
       h.destroy();if(S.mvHls[slot]===h)S.mvHls[slot]=null;
-      const c=document.getElementById('mv-cell-'+slot);
-      if(!c||c.querySelector('video')!==vid)return;
-      // Auto-retry una vez tras 2s antes de mostrar error en pantalla
+      const c=document.getElementById(`mv-cell-${slot}`);
+      if(!c||c.querySelector('video')!==vid){_mvQueueDone(500);return;}
+      // Auto-retry once quickly before showing error UI
       if(retryCount<1){
         _mvTimers[slot]=setTimeout(()=>{
           _mvTimers[slot]=null;
-          const still=document.getElementById('mv-cell-'+slot);
+          const still=document.getElementById(`mv-cell-${slot}`);
           if(!still||still.querySelector('video')!==vid)return;
           _mvEnqueue(vid,url,slot,retryCount+1);
-        },2000);
+        },500);
+        _mvQueueDone(500); // release queue so others can start while this retries
         return;
       }
-      const existing=c.querySelector('.mv-cell-err');if(existing)existing.remove();
-      const err=document.createElement('div');err.className='mv-cell-err';
-      err.innerHTML='<i class="fa-solid fa-circle-exclamation"></i><span>Sin señal</span><button onclick="event.stopPropagation();_rebuildMvSlot('+slot+')" style="background:var(--celeste);border:none;color:#000;border-radius:99px;padding:5px 14px;font-size:12px;cursor:pointer;font-family:Poppins,sans-serif;font-weight:600">Reintentar</button>';
-      c.appendChild(err);
+        const existing=c.querySelector('.mv-cell-err');if(existing)existing.remove();
+        const err=document.createElement('div');err.className='mv-cell-err';
+        err.innerHTML=`<i class="fa-solid fa-circle-exclamation"></i><span>Sin señal</span><button onclick="event.stopPropagation();_rebuildMvSlot(${slot})" style="background:var(--celeste);border:none;color:#000;border-radius:99px;padding:5px 14px;font-size:12px;cursor:pointer;font-family:Poppins,sans-serif;font-weight:600">Reintentar</button>`;
+        c.appendChild(err);
+        _mvQueueDone(500);
+      }
     });
     S.mvHls[slot]=h;
   } else if(vid.canPlayType('application/vnd.apple.mpegurl')){
     vid.src=url;
-    vid.addEventListener('loadedmetadata',()=>{vid.play().catch(()=>{}); },{once:true});
+    vid.addEventListener('loadedmetadata',()=>{vid.play().catch(()=>{});_mvQueueDone(2000);},{once:true});
     vid.addEventListener('error',()=>{
-      const c=document.getElementById('mv-cell-'+slot);
-      if(!c||c.querySelector('video')!==vid)return;
+      const c=document.getElementById(`mv-cell-${slot}`);
+      if(!c||c.querySelector('video')!==vid){_mvQueueDone(500);return;}
       if(retryCount<1){
         setTimeout(()=>{
-          const still=document.getElementById('mv-cell-'+slot);
+          const still=document.getElementById(`mv-cell-${slot}`);
           if(!still||still.querySelector('video')!==vid)return;
           _mvEnqueue(vid,url,slot,retryCount+1);
-        },2000);
+        },5000);
+        _mvQueueDone(500);
         return;
       }
       const err=document.createElement('div');err.className='mv-cell-err';
-      err.innerHTML='<i class="fa-solid fa-circle-exclamation"></i><span>Sin señal</span><button onclick="event.stopPropagation();_rebuildMvSlot('+slot+')" style="background:var(--celeste);border:none;color:#000;border-radius:99px;padding:5px 14px;font-size:12px;cursor:pointer;font-family:Poppins,sans-serif;font-weight:600">Reintentar</button>';
+      err.innerHTML=`<i class="fa-solid fa-circle-exclamation"></i><span>Sin señal</span><button onclick="event.stopPropagation();_rebuildMvSlot(${slot})" style="background:var(--celeste);border:none;color:#000;border-radius:99px;padding:5px 14px;font-size:12px;cursor:pointer;font-family:Poppins,sans-serif;font-weight:600">Reintentar</button>`;
       c.appendChild(err);
+      _mvQueueDone(500);
     },{once:true});
     S.mvHls[slot]=null;
   }
