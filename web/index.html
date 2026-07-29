@@ -955,6 +955,7 @@ function renderLive(){
   renderLiveChannels();
 }
 function setLiveCat(id,btn){S.liveCatActive=id;document.querySelectorAll('#live-cats .cat-tab').forEach(b=>b.classList.remove('active'));btn.classList.add('active');renderLiveChannels();}
+function _chCard(s){return '<div class="channel-card" onclick="openLiveDetail('+s.stream_id+')">'+'<img class="channel-thumb" src="'+esc(s.stream_icon||'')+'" onerror="this.style.display=\'none\'" loading="lazy">'+'<div class="channel-info"><div class="channel-name">'+esc(s.name)+'</div><div class="channel-epg" id="epg-'+s.stream_id+'">\u2014</div><div class="channel-epg-time" id="epgt-'+s.stream_id+'"></div></div>'+'<span class="channel-live-badge">EN VIVO</span></div>';}
 function renderLiveChannels(){
   let streams=S.liveStreams;
   if(S.liveCatActive==='favorites'){const ids=new Set(S.myList.filter(x=>x.type==='live').map(x=>String(x.id)));streams=streams.filter(s=>ids.has(String(s.stream_id)));}
@@ -962,27 +963,21 @@ function renderLiveChannels(){
   streams=streams.filter(s=>!S.blockedCats.has(s.category_id));
   const el=document.getElementById('live-channels');
   if(!streams.length){el.innerHTML='<p style="color:var(--text-muted);padding:24px 0">Sin canales.</p>';return;}
-  // Poblar _liveStore con TODOS los canales filtrados (no solo los visibles)
   streams.forEach(s=>{_liveStore[s.stream_id]=s;});
-  // Renderizar en bloques para no bloquear el UI con listas muy largas
   const CHUNK=300;
-  el.innerHTML=streams.slice(0,CHUNK).map(s=>`<div class="channel-card" onclick="openLiveDetail(${s.stream_id})">
-    <img class="channel-thumb" src="${esc(s.stream_icon||'')}" onerror="this.style.display='none'" loading="lazy">
-    <div class="channel-info"><div class="channel-name">${esc(s.name)}</div><div class="channel-epg" id="epg-${s.stream_id}">—</div><div class="channel-epg-time" id="epgt-${s.stream_id}"></div></div>
-    <span class="channel-live-badge">EN VIVO</span></div>`).join('');
+  el.innerHTML=streams.slice(0,CHUNK).map(_chCard).join('');
+  const moreBtn=el.parentNode.querySelector('.ch-load-more');if(moreBtn)moreBtn.remove();
   if(streams.length>CHUNK){
     let offset=CHUNK;
     const more=document.createElement('button');
-    more.className='cat-tab';more.style.cssText='display:block;margin:18px auto;padding:10px 28px;';
-    more.textContent=`Ver más (${streams.length-CHUNK} canales restantes)`;
-    more.onclick=()=>{
-      el.insertAdjacentHTML('beforeend',streams.slice(offset,offset+CHUNK).map(s=>`<div class="channel-card" onclick="openLiveDetail(${s.stream_id})">
-    <img class="channel-thumb" src="${esc(s.stream_icon||'')}" onerror="this.style.display='none'" loading="lazy">
-    <div class="channel-info"><div class="channel-name">${esc(s.name)}</div><div class="channel-epg" id="epg-${s.stream_id}">—</div><div class="channel-epg-time" id="epgt-${s.stream_id}"></div></div>
-    <span class="channel-live-badge">EN VIVO</span></div>`).join('');
+    more.className='cat-tab ch-load-more';
+    more.style.cssText='display:block;margin:18px auto;padding:10px 28px;';
+    more.textContent='Ver mas ('+( streams.length-CHUNK)+' canales restantes)';
+    more.onclick=function(){
+      el.insertAdjacentHTML('beforeend',streams.slice(offset,offset+CHUNK).map(_chCard).join(''));
       offset+=CHUNK;
-      if(offset>=streams.length)more.remove();
-      else more.textContent=`Ver más (${streams.length-offset} canales restantes)`;
+      if(offset>=streams.length){more.remove();}
+      else{more.textContent='Ver mas ('+(streams.length-offset)+' canales restantes)';}
     };
     el.after(more);
   }
