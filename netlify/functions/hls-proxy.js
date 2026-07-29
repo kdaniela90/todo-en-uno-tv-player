@@ -1,8 +1,11 @@
 /**
  * hls-proxy.js — Netlify Function
  *
- * Producción: self-loop via Netlify CDN (IPs de edge no bloqueadas por el servidor IPTV).
- * Local (netlify dev): fetch directo al servidor IPTV con resolución correcta de rutas relativas.
+ * Producción: self-loop via Netlify CDN proxy (/xtream-live/).
+ *   El CDN tiene status=200 force=true, lo que significa que ya sigue
+ *   cualquier redirect del servidor IPTV internamente y retorna 200 con
+ *   el contenido directo — NO se debe esperar 302.
+ * Local (netlify dev): fetch directo al servidor IPTV.
  */
 exports.handler = async (event) => {
   const { u, p, id } = event.queryStringParameters || {};
@@ -12,54 +15,39 @@ exports.handler = async (event) => {
   const isLocal = siteBase.includes('localhost') || siteBase.includes('127.0.0.1');
   const IPTV = 'http://allinonestream.xyz:8080';
 
+  const fetchHeaders = {
+    'User-Agent': 'Mozilla/5.0',
+    'Accept': '*/*',
+    'Connection': 'keep-alive',
+  };
+
   try {
     let m3u8;
 
     if (isLocal) {
       // ── MODO LOCAL: fetch directo al servidor IPTV ──
       const directUrl = `${IPTV}/live/${u}/${p}/${id}.m3u8`;
-      const resp = await fetch(directUrl, {
-        redirect: 'follow',
-        headers: { 'User-Agent': 'Mozilla/5.0', 'Accept': '*/*' },
-      });
+      const resp = await fetch(directUrl, { redirect: 'follow', headers: fetchHeaders });
       if (!resp.ok) {
         return { statusCode: resp.status, body: `Stream unavailable (${resp.status})` };
       }
       m3u8 = await resp.text();
-
-      // URL final tras redirect (necesaria para resolver rutas relativas)
       const finalUrl = resp.url || directUrl;
       const finalBase = finalUrl.substring(0, finalUrl.lastIndexOf('/') + 1);
-
       m3u8 = rewriteSegments(m3u8, finalBase, IPTV);
 
     } else {
-      // ── MODO PRODUCCIÓN: self-loop via CDN ──
-      const cdnAuthUrl = `${siteBase}/xtream-live/${u}/${p}/${id}.m3u8`;
-      const authResp = await fetch(cdnAuthUrl, {
-        redirect: 'manual',
-        headers: { 'User-Agent': 'Mozilla/5.0', 'Accept': '*/*' },
-      });
-      if (authResp.status !== 302) {
-          return { statusCode: authResp.status, body: `Auth failed (${authResp.status})` };
+      // ── MODO PRODUCCIÓN: via CDN proxy ──
+      // status=200 force=true en netlify.toml significa que el CDN ya sigue
+      // el redirect del IPTV y devuelve 200 con el contenido — no 302.
+      const cdnUrl = `${siteBase}/xtream-live/${u}/${p}/${id}.m3u8`;
+      const resp = await fetch(cdnUrl, { redirect: 'follow', headers: fetchHeaders });
+      if (!resp.ok) {
+        return { statusCode: resp.status, body: `Stream unavailable (${resp.status})` };
       }
-      const location = authResp.headers.get('location') || '';
-      if (!location) return { statusCode: 502, body: 'Auth: 302 sin Location header' };
-
-      let tokenPath;
-      try { tokenPath = new URL(location).pathname; }
-      catch { tokenPath = location.startsWith('/') ? location : '/' + location; }
-
-      const cdnMediaUrl = `${siteBase}/xtream-media${tokenPath}`;
-      const m3u8Resp = await fetch(cdnMediaUrl, {
-        redirect: 'follow',
-        headers: { 'User-Agent': 'Mozilla/5.0', 'Accept': '*/*' },
-      });
-      if (!m3u8Resp.ok) {
-        return { statusCode: m3u8Resp.status, body: `Media unavailable (${m3u8Resp.status})` };
-      }
-      m3u8 = await m3u8Resp.text();
-      const finalBase = (m3u8Resp.url || cdnMediaUrl).replace(/\/[^/]*$/, '/');
+      m3u8 = await resp.text();
+      // finalBase para resolver segmentos con URL relativa
+      const finalBase = (resp.url || cdnUrl).replace(/\/[^/]*$/, '/');
       m3u8 = rewriteSegments(m3u8, finalBase, IPTV);
     }
 
@@ -78,7 +66,7 @@ exports.handler = async (event) => {
     };
 
   } catch (err) {
-    return { statusCode: 500, body: 'Proxy error' };
+    return { statusCode: 500, body: `Proxy error: ${err.message}` };
   }
 };
 

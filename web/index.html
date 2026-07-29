@@ -1190,6 +1190,7 @@ function doSearch(){
 let _hls=null;
 let _vodToken=0;
 let _progressTimer=null;
+let _stallWatchdog=null;
 
 // Progress persistence
 function _saveProgress(type,id,pos,dur){try{const k='teutv_progress',all=JSON.parse(localStorage.getItem(k)||'{}');all[type+'_'+id]={pos:Math.floor(pos),dur:Math.floor(dur),ts:Date.now()};localStorage.setItem(k,JSON.stringify(all));}catch(e){}}
@@ -1198,6 +1199,23 @@ function _clearProgress(type,id){try{const all=JSON.parse(localStorage.getItem('
 function _fmtTime(s){const m=Math.floor(s/60),sec=Math.floor(s%60);return m+':'+(sec<10?'0':'')+sec;}
 
 function openPlayer(title){document.getElementById('screen-app').classList.remove('active');document.getElementById('screen-player').classList.add('active');document.getElementById('player-title').textContent=title;document.getElementById('player-loading').style.display='flex';}
+function _stopStallWatchdog(){if(_stallWatchdog){clearInterval(_stallWatchdog);_stallWatchdog=null;}}
+function _startStallWatchdog(videoEl,url,myToken){
+  _stopStallWatchdog();
+  let _lastCt=-1,_ticks=0;
+  _stallWatchdog=setInterval(()=>{
+    if(myToken!==_vodToken){_stopStallWatchdog();return;}
+    if(videoEl.paused||videoEl.ended)return;
+    const ct=videoEl.currentTime;
+    if(ct===_lastCt){
+      if(++_ticks>=2){
+        _ticks=0;_lastCt=-1;
+        if(_hls){try{_hls.startLoad();}catch(e){}}
+        else{_doLoadHls(videoEl,url,myToken,0);}
+      }
+    }else{_lastCt=ct;_ticks=0;}
+  },5000);
+}
 function closePlayer(){
   const v=document.getElementById('player-video');
   if(S.currentPlayer&&v.currentTime>5&&v.duration&&(v.currentTime/v.duration)<0.92){
@@ -1207,6 +1225,7 @@ function closePlayer(){
   document.getElementById('screen-player').classList.remove('active');
   document.getElementById('screen-app').classList.add('active');
   v.pause();
+  _stopStallWatchdog();
   if(_progressTimer){clearInterval(_progressTimer);_progressTimer=null;}
   if(_hls){_hls.destroy();_hls=null;}
   v.src='';
@@ -1222,6 +1241,7 @@ function loadHls(videoEl,url){
   const myToken=_vodToken;
   if(_hls){_hls.destroy();_hls=null;}
   if(_progressTimer){clearInterval(_progressTimer);_progressTimer=null;}
+  _stopStallWatchdog();
   _doLoadHls(videoEl,url,myToken,0);
 }
 function _doLoadHls(videoEl,url,myToken,retryCount){
@@ -1235,20 +1255,23 @@ function _doLoadHls(videoEl,url,myToken,retryCount){
   if(Hls.isSupported()){
     _hls=new Hls({enableWorker:true,lowLatencyMode:true,xhrSetup:(xhr)=>{xhr.timeout=20000;}});
     _hls.loadSource(url);_hls.attachMedia(videoEl);
-    _hls.on(Hls.Events.MANIFEST_PARSED,()=>{if(myToken!==_vodToken)return;if(loading)loading.style.display='none';videoEl.play().catch(()=>{});});
+    _hls.on(Hls.Events.MANIFEST_PARSED,()=>{if(myToken!==_vodToken)return;if(loading)loading.style.display='none';videoEl.play().catch(()=>{});_startStallWatchdog(videoEl,url,myToken);});
     _hls.on(Hls.Events.ERROR,(_,d)=>{
-      if(d.fatal&&myToken===_vodToken){
-        _hls.destroy();_hls=null;
+      if(myToken!==_vodToken)return;
+      if(d.fatal){
+        _stopStallWatchdog();_hls.destroy();_hls=null;
         if(retryCount<1){setTimeout(()=>_doLoadHls(videoEl,url,myToken,1),5000);return;}
         showPlayerError('Error al cargar la señal. Verifica tu conexión o intenta con otro canal.');
+      }else if(d.type===Hls.ErrorTypes.MEDIA_ERROR){
+        try{_hls.recoverMediaError();}catch(e){}
       }
     });
   } else if(videoEl.canPlayType('application/vnd.apple.mpegurl')){
     videoEl.src=url;
-    videoEl.addEventListener('loadedmetadata',()=>{if(myToken!==_vodToken)return;if(loading)loading.style.display='none';videoEl.play().catch(()=>{});},{once:true});
+    videoEl.addEventListener('loadedmetadata',()=>{if(myToken!==_vodToken)return;if(loading)loading.style.display='none';videoEl.play().catch(()=>{});_startStallWatchdog(videoEl,url,myToken);},{once:true});
     videoEl.addEventListener('error',()=>{
       if(myToken!==_vodToken)return;
-      if(retryCount<1){setTimeout(()=>_doLoadHls(videoEl,url,myToken,1),5000);return;}
+      if(retryCount<1){_stopStallWatchdog();setTimeout(()=>_doLoadHls(videoEl,url,myToken,1),5000);return;}
       showPlayerError('Error al cargar el contenido.');
     },{once:true});
   }
@@ -1258,6 +1281,7 @@ function loadVod(videoEl,url,resumePos){
   const myToken=_vodToken;
   if(_hls){_hls.destroy();_hls=null;}
   if(_progressTimer){clearInterval(_progressTimer);_progressTimer=null;}
+  _stopStallWatchdog();
   _doLoadVod(videoEl,url,resumePos,myToken,0);
 }
 function _doLoadVod(videoEl,url,resumePos,myToken,retryCount){
