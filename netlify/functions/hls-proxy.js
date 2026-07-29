@@ -1,21 +1,26 @@
 /**
- * hls-proxy.js — Netlify Function (v6)
+ * hls-proxy.js — Netlify Function v6
  *
- * Regresa a la estrategia probada de v4 (CDN self-loop siempre),
- * manteniendo Phase 1 solo para obtener finalBase correcto.
+ * Obtiene el M3U8 de un canal en vivo y reescribe las URLs de segmentos
+ * para que pasen por los proxies CDN del mismo origen.
  *
- * v5 intentó un "fast path" directo al streaming server, pero el token
- * del Location header está vinculado a la IP de Lambda. El edge CDN
- * (distinta IP) es rechazado → timeout 6s → no queda tiempo para fallback
- * dentro del límite de Lambda (10s).
+ * Cambios vs versiones anteriores:
+ *   - v4: Intento 1 (Lambda→IPTV direct) + Intento 2 (CDN self-loop)
+ *         Problema: Intento 1 siempre falla (IPs Lambda bloqueadas) y
+ *         agrega 5s de latencia antes del CDN self-loop.
+ *   - v5/v6: Elimina Intento 1. Usa CDN self-loop siempre.
+ *         Fase 1 (GET+redirect:manual) solo para capturar finalBase
+ *         y mejorar la reescritura de segmentos (4s timeout rápido).
+ *         Agrega 216.106.177.68 → /xtream-stream-hls en rewriteSegments.
  *
- * Estrategia v6:
- *   Fase 1 — GET+redirect:manual a allinonestream.xyz:8080 (timeout 4s)
- *     → Captura Location para obtener finalBase (URL del streaming server real)
- *     → Sin descargar body
- *   Fase 2 — CDN self-loop: /xtream-live/ → Netlify CDN edge → IPTV → streaming server
- *     → Igual que v4. El CDN edge genera su propio token con IPTV.
- *     → finalBase de Fase 1 asegura que los segmentos se resuelvan correctamente.
+ * Estrategia:
+ *   Fase 1 — GET+redirect:manual a IPTV (4s timeout, sin descargar body)
+ *     → Captura Location del 302 → guarda como finalBase para segmentos
+ *     → Si falla, finalBase queda apuntando a IPTV (funciona igual)
+ *
+ *   Fase 2 — CDN self-loop SIEMPRE (8s timeout)
+ *     → ${siteBase}/xtream-live/u/p/id.m3u8 → CDN → IPTV → media server
+ *     → CDN edge usa IPs no bloqueadas → obtiene M3U8 real
  *
  * Rutas CDN para segmentos (netlify.toml):
  *   216.106.177.68        → /xtream-stream-hls/
@@ -50,7 +55,7 @@ exports.handler = async (event) => {
     let finalBase = `${IPTV}/live/${u}/${p}/`;
 
     if (isLocal) {
-      // ── LOCAL: fetch directo desde Lambda ───────────────────────────────────
+      // ── LOCAL: fetch directo desde Lambda ──────────────────────────────────
       try {
         const resp = await fetchWithTimeout(
           `${IPTV}/live/${u}/${p}/${id}.m3u8`,
@@ -68,11 +73,11 @@ exports.handler = async (event) => {
       } catch (e) { /* timeout */ }
 
     } else {
-      // ── PRODUCCIÓN ──────────────────────────────────────────────────────────
+      // ── PRODUCCIÓN ────────────────────────────────────────────────────────
 
-      // Fase 1: GET+redirect:manual — capturar Location para saber el finalBase.
-      // IPTV devuelve 302 inmediatamente → Lambda lee el header, no conecta al streaming server.
-      // NOTA: IPTV rechaza HEAD a nivel TCP, por eso usamos GET+manual.
+      // Fase 1: GET+redirect:manual — capturar Location para finalBase.
+      // Solo nos interesa el header Location (no el body del video).
+      // IPTV devuelve 302 inmediatamente, sin descargar contenido.
       try {
         const resp1 = await fetchWithTimeout(
           `${IPTV}/live/${u}/${p}/${id}.m3u8`,
@@ -83,12 +88,10 @@ exports.handler = async (event) => {
         if (location) {
           finalBase = location.substring(0, location.lastIndexOf('/') + 1);
         }
-      } catch (e) { /* timeout o fallo → usa finalBase por defecto (IPTV) */ }
+      } catch (e) { /* timeout o red → finalBase queda apuntando a IPTV (OK) */ }
 
-      // Fase 2: CDN self-loop — el edge de Netlify hace la petición a IPTV,
-      // recibe el 302, lo sigue hasta el streaming server y descarga el m3u8.
-      // El token que genera IPTV queda vinculado a la IP del edge CDN, que
-      // también servirá los segmentos → sin IP-binding issues.
+      // Fase 2: CDN self-loop SIEMPRE — el CDN edge (IPs no bloqueadas)
+      // contacta IPTV y sigue el redirect al media server real.
       try {
         const resp2 = await fetchWithTimeout(
           `${siteBase}/xtream-live/${u}/${p}/${id}.m3u8`,
@@ -99,9 +102,8 @@ exports.handler = async (event) => {
           const text = await resp2.text();
           if (text && text.includes('#EXTM3U')) {
             m3u8 = text;
-            // Si Fase 1 no dio Location, intentar obtener finalBase de resp2.url
-            // (aunque resp2.url es la URL del CDN, no del streaming server)
-            if (finalBase === `${IPTV}/live/${u}/${p}/`) {
+            // Si Fase 1 no dio finalBase, intentar obtenerla de resp2.url
+            if (!finalBase || finalBase === `${IPTV}/live/${u}/${p}/`) {
               const respUrl   = resp2.url || '';
               const ourDomain = siteBase.replace('https://', '').replace('http://', '');
               if (respUrl && !respUrl.includes(ourDomain) && respUrl.startsWith('http')) {
@@ -139,13 +141,15 @@ exports.handler = async (event) => {
 /**
  * Reescribe URLs de segmentos para que pasen por los proxies CDN del mismo origen.
  *
- * Rutas root-relative (empiezan con /) se resuelven contra el streaming server real
- * (finalBase), NO contra IPTV, para evitar Mixed Content y redirecciones al browser.
+ * IMPORTANTE: rutas root-relative (empiezan con /) se resuelven contra
+ * el STREAMING SERVER REAL (finalBase, ej. http://216.106.177.68/live/play/TOKEN/)
+ * y NO contra IPTV (allinonestream.xyz:8080).
  */
 function rewriteSegments(m3u8, finalBase, IPTV) {
+  // Extraer el origen del streaming server para rutas root-relative
   let streamingOrigin;
   try {
-    streamingOrigin = new URL(finalBase).origin;
+    streamingOrigin = new URL(finalBase).origin; // ej: 'http://216.106.177.68'
   } catch {
     streamingOrigin = IPTV;
   }
@@ -155,7 +159,7 @@ function rewriteSegments(m3u8, finalBase, IPTV) {
     try {
       let abs;
       if (uri.startsWith('http'))   abs = uri;
-      else if (uri.startsWith('/')) abs = new URL(uri, streamingOrigin).href;
+      else if (uri.startsWith('/')) abs = new URL(uri, streamingOrigin).href; // root-relative → streaming server
       else                          abs = new URL(uri, finalBase).href;
 
       const { host, pathname } = new URL(abs);
@@ -163,18 +167,20 @@ function rewriteSegments(m3u8, finalBase, IPTV) {
       if (host === '216.106.177.68'     || host === '216.106.177.68:80')  return '/xtream-stream-hls' + pathname;
       if (host === '23.237.74.2'        || host === '23.237.74.2:80')     return '/xtream-live-relay' + pathname;
       if (host === '23.237.104.74:8080' || host === '23.237.104.74')      return '/xtream-media'      + pathname;
-      if (host === '23.158.40.201:80'   || host === '23.158.40.201')      return '/xtream-vod-media'  + pathname;
+      if (host === '23.158.40.201'      || host === '23.158.40.201:80')   return '/xtream-vod-media'  + pathname;
       return '/xtream-chunks' + pathname;
     } catch {
       return uri;
     }
   }
 
+  // Reescribir líneas de segmentos (no empiezan con #)
   m3u8 = m3u8.replace(/^(?!#)([^\r\n]+)$/gm, (line) => {
     const t = line.trim();
     return t ? toProxy(t) : line;
   });
 
+  // Reescribir URIs dentro de EXT-X-KEY y EXT-X-MAP
   m3u8 = m3u8.replace(
     /(#EXT-X-(?:KEY|MAP)[^\r\n]*URI=")([^"]+)(")/gm,
     (_, a, uri, b) => a + toProxy(uri) + b,
