@@ -46,8 +46,10 @@ exports.handler = async (event) => {
         return { statusCode: resp.status, body: `Stream unavailable (${resp.status})` };
       }
       m3u8 = await resp.text();
-      // finalBase para resolver segmentos con URL relativa
-      const finalBase = (resp.url || cdnUrl).replace(/\/[^/]*$/, '/');
+      // IMPORTANTE: usar la URL del IPTV como base para resolver segmentos relativos,
+      // NO la URL del CDN. Netlify con status=200 sigue redirects internamente,
+      // así que resp.url refleja la URL del CDN, no el servidor IPTV real.
+      const finalBase = `${IPTV}/live/${u}/${p}/`;
       m3u8 = rewriteSegments(m3u8, finalBase, IPTV);
     }
 
