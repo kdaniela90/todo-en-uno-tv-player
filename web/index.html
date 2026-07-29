@@ -1503,30 +1503,26 @@ function renderMultiview(){
   }
 }
 const _mvTimers={};
-// Sequential queue: one HLS stream starts at a time, next begins only after MANIFEST_PARSED or error
-const _mvQueue=[];
-let _mvQueueBusy=false;
+// Staggered loading: cada stream inicia con 1.5s de delay respecto al anterior,
+// sin esperar a que el anterior confirme MANIFEST_PARSED.
+// Esto reduce el tiempo total de 16-20s (queue secuencial) a ~4-7s para 4 streams.
 function _mvEnqueue(vid,url,slot,retry){
-  // Remove any existing pending entry for this slot
-  for(let i=_mvQueue.length-1;i>=0;i--){if(_mvQueue[i].slot===slot)_mvQueue.splice(i,1);}
-  _mvQueue.push({vid,url,slot,retry:retry||0});
-  _mvDrainQueue();
+  const delay=(retry||0)===0?(slot*1500):0;
+  if(_mvTimers['__s'+slot]){clearTimeout(_mvTimers['__s'+slot]);}
+  if(delay>0){
+    _mvTimers['__s'+slot]=setTimeout(()=>{
+      _mvTimers['__s'+slot]=null;
+      const c=document.getElementById('mv-cell-'+slot);
+      if(!c||c.querySelector('video')!==vid)return;
+      _startMvHls(vid,url,slot,retry||0);
+    },delay);
+  } else {
+    const c=document.getElementById('mv-cell-'+slot);
+    if(!c||c.querySelector('video')!==vid)return;
+    _startMvHls(vid,url,slot,retry||0);
+  }
 }
-function _mvDrainQueue(){
-  if(_mvQueueBusy||_mvQueue.length===0)return;
-  _mvQueueBusy=true;
-  const item=_mvQueue.shift();
-  const {vid,url,slot,retry}=item;
-  // Verify slot still valid before starting
-  const c=document.getElementById(`mv-cell-${slot}`);
-  if(!c||c.querySelector('video')!==vid){_mvQueueBusy=false;_mvDrainQueue();return;}
-  _startMvHls(vid,url,slot,retry);
-}
-function _mvQueueDone(delay){
-  // Release queue lock after delay so next stream doesn't hammer server
-  if(_mvTimers['__q']){clearTimeout(_mvTimers['__q']);}
-  _mvTimers['__q']=setTimeout(()=>{_mvTimers['__q']=null;_mvQueueBusy=false;_mvDrainQueue();},delay||2000);
-}
+function _mvQueueDone(delay){}
 function _buildMvCell(cell,slot,id,name){
   const url=`/.netlify/functions/hls-proxy?u=${enc(S.creds.username)}&p=${enc(S.creds.password)}&id=${id}`;
   // Cancel any pending timer for this slot
@@ -1646,7 +1642,6 @@ function mvSelectAudio(slot){
 function _rebuildMvSlot(slot){const ch=S.mvChannels[slot];if(!ch)return;const cell=document.getElementById(`mv-cell-${slot}`);if(cell)_buildMvCell(cell,slot,ch.id,ch.name);}
 function setMvLayout(n){S.mvLayout=n;document.getElementById('mv-btn-2').classList.toggle('active',n===2);document.getElementById('mv-btn-4').classList.toggle('active',n===4);renderMultiview();}
 function closeMvAll(){
-  _mvQueue.length=0;_mvQueueBusy=false;
   Object.keys(_mvTimers).forEach(k=>{if(_mvTimers[k]){clearTimeout(_mvTimers[k]);_mvTimers[k]=null;}});
   S.mvHls.forEach(h=>{if(h)h.destroy();});S.mvHls=[];S.mvChannels=[];S.mvAudioSlot=-1;
   const grid=document.getElementById('mv-grid');if(grid)grid.innerHTML='';

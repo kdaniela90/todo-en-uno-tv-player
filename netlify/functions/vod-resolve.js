@@ -1,19 +1,26 @@
 /**
- * vod-resolve.js — Netlify Function (v3)
+ * vod-resolve.js — Netlify Function (v4)
  *
- * Fix v3:
- *  1. Intento 1 usaba HEAD → IPTV rechaza HEAD al nivel TCP ("fetch failed").
- *     Cambio: GET+redirect:manual. IPTV devuelve 302 sin enviar body del archivo,
- *     Lambda captura Location (URL del media server con token) sin descargar nada.
- *  2. Intento 2 cambia de HEAD a GET+redirect:follow + Range:bytes=0-0
- *     para que Lambda pueda obtener resp.url (streaming server) incluso si
- *     el IPTV rechaza HEAD.
- *  3. 216.106.177.68 agregado a toMediaProxy() (nuevo servidor de streaming).
+ * Fix v4: Elimina Intento 1 (Lambda→IPTV directo).
+ *
+ * Problema v3: Intento 1 hacía GET+redirect:manual desde Lambda a IPTV.
+ * IPTV generaba un token ligado a la IP de Lambda (igual que el bug de
+ * hls-proxy v5 con live streams). Al redirigir al browser a un CDN proxy
+ * con ese token, el media server recibía la petición desde la IP de CDN edge
+ * (distinta a Lambda) → rechazaba el token → 403 → "No se pudo cargar el video".
+ *
+ * Solución: ir directo al CDN self-loop (Intento 1 en v4 = Intento 2 en v3).
+ * El CDN edge contacta a IPTV con su propia IP → token ligado a IP de CDN edge →
+ * el browser pide el video a través del mismo CDN edge → IPs coinciden → funciona.
  *
  * Estrategia:
- *   1 — GET+redirect:manual directo al IPTV: captura 302+Location sin descargar.
- *   2 — CDN self-loop GET+redirect:follow + Range: extrae resp.url del media server.
- *   3 — Fallback /xtream-vod/ (puede fallar con Mixed Content, ultimo recurso).
+ *   1 — CDN self-loop GET+redirect:follow + Range:bytes=0-0
+ *       Lambda pide /${cdnPrefix}/u/p/id.ext al CDN → CDN edge contacta IPTV
+ *       → IPTV devuelve 302 → CDN pasa 302 a Lambda → Lambda sigue redirect
+ *       → resp.url = URL del media server con token CDN-edge-IP-bound
+ *       → redirigir al browser a CDN proxy de esa URL
+ *   2 — Fallback: redirect directo al CDN self-loop (browser sigue el redirect)
+ *       No necesita que Lambda descargue nada — el browser hace todo el trabajo.
  */
 exports.handler = async (event) => {
   const { u, p, id, ext = 'mp4', type = 'movie' } = event.queryStringParameters || {};
@@ -47,7 +54,8 @@ exports.handler = async (event) => {
       if (host === '23.237.74.2'        || host === '23.237.74.2:80')     return '/xtream-live-relay'  + pathWithQuery;
       if (host === '23.237.104.74:8080' || host === '23.237.104.74')      return '/xtream-media'       + pathWithQuery;
       if (host === '23.158.40.201'      || host === '23.158.40.201:80')   return '/xtream-vod-media'   + pathWithQuery;
-      return '/xtream-chunks' + pathWithQuery;
+      // Host desconocido: null → no redirigir con token potencialmente inválido
+      return null;
     } catch {
       return null;
     }
@@ -64,37 +72,12 @@ exports.handler = async (event) => {
     };
   }
 
-  // ── Intento 1: GET+redirect:manual directo al IPTV ──────────────────────────
-  // FIX v3: HEAD era rechazado por IPTV al nivel TCP. GET+manual funciona:
-  // IPTV responde 302 inmediatamente, Lambda lee el header Location sin seguir
-  // el redirect ni descargar el archivo de video.
-  try {
-    const resp = await fetchWithTimeout(
-      `${IPTV}/${pathPrefix}/${u}/${p}/${id}.${ext}`,
-      { method: 'GET', redirect: 'manual', headers: fetchHeaders },
-      5000,
-    );
-    if (resp.status === 302) {
-      const location = resp.headers.get('location') || '';
-      if (location) {
-        const proxyPath = toMediaProxy(location);
-        if (proxyPath) {
-          return {
-            statusCode: 302,
-            headers: { 'Location': `${siteBase}${proxyPath}`, 'Cache-Control': 'no-cache' },
-            body: '',
-          };
-        }
-      }
-    }
-    // status 200 → IPTV sirve directo sin redirect → continuar
-  } catch (e) { /* continuar con CDN self-loop */ }
-
-  // ── Intento 2: CDN self-loop GET+redirect:follow ─────────────────────────────
-  // Lambda pide el archivo via CDN → Netlify CDN lo proxia al IPTV → IPTV devuelve
-  // 302 → Netlify pasa el 302 a Lambda → Lambda (redirect:follow) lo sigue hasta
-  // el media server. resp.url contiene la URL final del media server.
-  // Range:bytes=0-0 limita el body descargado a 1 byte (solo nos importa resp.url).
+  // ── Intento 1: CDN self-loop GET+redirect:follow ─────────────────────────────
+  // El CDN edge contacta a IPTV con su propia IP → token ligado a IP de CDN edge.
+  // Lambda sigue el redirect y obtiene resp.url (URL final del media server).
+  // Range:bytes=0-0 para evitar descargar el archivo completo (solo nos importa resp.url).
+  // Nota: algunos media servers ignoran Range y responden con 200 + body completo;
+  // en ese caso fetchWithTimeout corta a los 8s antes de que Lambda agote su límite.
   try {
     const resp = await fetchWithTimeout(
       `${siteBase}/${cdnPrefix}/${u}/${p}/${id}.${ext}`,
@@ -107,7 +90,7 @@ exports.handler = async (event) => {
     );
     const finalUrl = resp.url || '';
     const ourDomain = siteBase.replace('https://', '').replace('http://', '');
-    if (finalUrl && !finalUrl.includes(ourDomain)) {
+    if (finalUrl && !finalUrl.includes(ourDomain) && finalUrl.startsWith('http')) {
       const proxyPath = toMediaProxy(finalUrl);
       if (proxyPath) {
         return {
@@ -117,11 +100,14 @@ exports.handler = async (event) => {
         };
       }
     }
-  } catch (e) { /* continuar con fallback */ }
+  } catch (e) { /* timeout o error de red → fallback */ }
 
-  // ── Intento 3: Fallback proxy CDN directo ────────────────────────────────────
-  // Ultimo recurso. Puede fallar con Mixed Content si IPTV devuelve 302 HTTP
-  // al browser. Funciona si el IPTV sirve el archivo directamente (status 200).
+  // ── Intento 2: Fallback — redirect directo al CDN self-loop ──────────────────
+  // El browser sigue el redirect a /xtream-vod/u/p/id.ext.
+  // Netlify CDN proxia al IPTV → IPTV devuelve 302 al media server →
+  // Netlify (status=200 force=true) sirve el video directamente al browser.
+  // El token es generado por la IP del CDN edge que contactó al IPTV,
+  // y el browser pide el video al mismo CDN → IPs coinciden → funciona.
   return {
     statusCode: 302,
     headers: {
