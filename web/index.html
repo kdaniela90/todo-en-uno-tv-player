@@ -1460,23 +1460,31 @@ function confirmNewPin(){
 // ── MULTIVIEW ──
 function renderMultiview(){
   const n=S.mvLayout,grid=document.getElementById('mv-grid');
-  // If layout hasn't changed and cells already built, preserve running HLS streams
-  if(grid.className===`mv-grid layout-${n}` && grid.children.length===n){
-    for(let i=0;i<n;i++){const c=document.getElementById(`mv-cell-${i}`);if(c)c.classList.toggle('mv-audio-active',i===S.mvAudioSlot);}
-    return;
-  }
-  // Destroy HLS instances that won't fit the new layout
+
+  // Destroy HLS for slots que ya no caben en el nuevo layout (al reducir pantallas)
   for(let i=n;i<S.mvHls.length;i++){if(S.mvHls[i]){S.mvHls[i].destroy();S.mvHls[i]=null;}S.mvChannels[i]=null;}
+
+  // Actualizar clase del grid
   grid.className=`mv-grid layout-${n}`;
-  grid.innerHTML='';
+
+  // Eliminar celdas sobrantes al reducir layout (sin tocar las que quedan)
+  while(grid.children.length>n){grid.removeChild(grid.lastChild);}
+
+  // Agregar/actualizar celdas
   for(let i=0;i<n;i++){
-    const cell=document.createElement('div');cell.className='mv-cell';cell.id=`mv-cell-${i}`;
-    const ch=S.mvChannels[i];
-    if(ch){_buildMvCell(cell,i,ch.id,ch.name);}
-    else{cell.innerHTML=`<div class="mv-cell-overlay"><span class="mv-empty-icon"><i class="fa-solid fa-tv"></i></span><button class="mv-add-btn" onclick="openMvPicker(${i})"><i class="fa-solid fa-plus"></i> Agregar canal</button></div>`;}
-    grid.appendChild(cell);
+    let cell=document.getElementById(`mv-cell-${i}`);
+    if(cell){
+      // Celda ya existe y su stream sigue corriendo — solo actualizar estado de audio
+      cell.classList.toggle('mv-audio-active',i===S.mvAudioSlot);
+    } else {
+      // Celda nueva (al ampliar layout) — crear y encolar
+      cell=document.createElement('div');cell.className='mv-cell';cell.id=`mv-cell-${i}`;
+      const ch=S.mvChannels[i];
+      if(ch){_buildMvCell(cell,i,ch.id,ch.name);}
+      else{cell.innerHTML=`<div class="mv-cell-overlay"><span class="mv-empty-icon"><i class="fa-solid fa-tv"></i></span><button class="mv-add-btn" onclick="openMvPicker(${i})"><i class="fa-solid fa-plus"></i> Agregar canal</button></div>`;}
+      grid.appendChild(cell);
+    }
   }
-  if(S.mvAudioSlot>=0&&S.mvAudioSlot<n){document.getElementById(`mv-cell-${S.mvAudioSlot}`)?.classList.add('mv-audio-active');}
 }
 const _mvTimers={};
 // Sequential queue: one HLS stream starts at a time, next begins only after MANIFEST_PARSED or error
