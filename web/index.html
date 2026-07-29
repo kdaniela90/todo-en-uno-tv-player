@@ -879,6 +879,9 @@ function startApp(){
 
 // ── API ──
 function enc(s){return encodeURIComponent(s);}
+// Decodifica base64 con soporte UTF-8 (acentos, Ñ, etc.)
+// atob() sola trata el resultado como Latin-1 y rompe caracteres no-ASCII.
+function decodeB64(s){try{return decodeURIComponent(escape(atob(s)));}catch{try{return atob(s);}catch{return s;}}}
 // Sanitize category IDs used in onclick attrs — strips anything that's not alphanumeric/underscore/hyphen
 function safeId(s){return String(s||'').replace(/[^a-zA-Z0-9_-]/g,'');}
 function apiUrl(action,extra){const{username:u,password:p}=S.creds;return `/xtream-api/player_api.php?username=${enc(u)}&password=${enc(p)}&action=${action}${extra||''}`;}
@@ -959,13 +962,31 @@ function renderLiveChannels(){
   streams=streams.filter(s=>!S.blockedCats.has(s.category_id));
   const el=document.getElementById('live-channels');
   if(!streams.length){el.innerHTML='<p style="color:var(--text-muted);padding:24px 0">Sin canales.</p>';return;}
-  const visible=streams.slice(0,200);
-  visible.forEach(s=>{_liveStore[s.stream_id]=s;});
-  el.innerHTML=visible.map(s=>`<div class="channel-card" onclick="openLiveDetail(${s.stream_id})">
+  // Poblar _liveStore con TODOS los canales filtrados (no solo los visibles)
+  streams.forEach(s=>{_liveStore[s.stream_id]=s;});
+  // Renderizar en bloques para no bloquear el UI con listas muy largas
+  const CHUNK=300;
+  el.innerHTML=streams.slice(0,CHUNK).map(s=>`<div class="channel-card" onclick="openLiveDetail(${s.stream_id})">
     <img class="channel-thumb" src="${esc(s.stream_icon||'')}" onerror="this.style.display='none'" loading="lazy">
     <div class="channel-info"><div class="channel-name">${esc(s.name)}</div><div class="channel-epg" id="epg-${s.stream_id}">—</div><div class="channel-epg-time" id="epgt-${s.stream_id}"></div></div>
     <span class="channel-live-badge">EN VIVO</span></div>`).join('');
-  fetchEpgBatch(visible.slice(0,20));
+  if(streams.length>CHUNK){
+    let offset=CHUNK;
+    const more=document.createElement('button');
+    more.className='cat-tab';more.style.cssText='display:block;margin:18px auto;padding:10px 28px;';
+    more.textContent=`Ver más (${streams.length-CHUNK} canales restantes)`;
+    more.onclick=()=>{
+      el.insertAdjacentHTML('beforeend',streams.slice(offset,offset+CHUNK).map(s=>`<div class="channel-card" onclick="openLiveDetail(${s.stream_id})">
+    <img class="channel-thumb" src="${esc(s.stream_icon||'')}" onerror="this.style.display='none'" loading="lazy">
+    <div class="channel-info"><div class="channel-name">${esc(s.name)}</div><div class="channel-epg" id="epg-${s.stream_id}">—</div><div class="channel-epg-time" id="epgt-${s.stream_id}"></div></div>
+    <span class="channel-live-badge">EN VIVO</span></div>`).join('');
+      offset+=CHUNK;
+      if(offset>=streams.length)more.remove();
+      else more.textContent=`Ver más (${streams.length-offset} canales restantes)`;
+    };
+    el.after(more);
+  }
+  fetchEpgBatch(streams.slice(0,20));
 }
 async function fetchEpgBatch(streams){
   // One request per channel (Xtream standard); staggered to avoid rate-limit
@@ -980,7 +1001,7 @@ async function fetchEpgBatch(streams){
       if(!prog){el.textContent='';continue;}
       // Titles are base64-encoded in Xtream API
       let title=prog.title||'';
-      try{title=atob(title);}catch{}
+      try{title=decodeB64(title);}catch{}
       el.textContent=title;
       if(et&&prog.start_timestamp&&prog.stop_timestamp){
         const ts=new Date(+prog.start_timestamp*1000).toLocaleTimeString('es-MX',{hour:'2-digit',minute:'2-digit'});
@@ -1016,7 +1037,7 @@ async function openLiveDetail(id){
     const epgEl=document.getElementById('live-detail-epg');
     if(!epgEl)return;
     if(!listings.length){epgEl.innerHTML='<div class="live-epg-now" style="color:var(--text-muted);font-size:12px">Sin guía disponible</div>';return;}
-    function fmtProg(p){let title=p.title||'';try{title=atob(title);}catch{}const ts=p.start_timestamp?new Date(+p.start_timestamp*1000).toLocaleTimeString('es-MX',{hour:'2-digit',minute:'2-digit'}):'';const te=p.stop_timestamp?new Date(+p.stop_timestamp*1000).toLocaleTimeString('es-MX',{hour:'2-digit',minute:'2-digit'}):'';return{title,time:ts&&te?`${ts} – ${te}`:''};}
+    function fmtProg(p){let title=p.title||'';try{title=decodeB64(title);}catch{}const ts=p.start_timestamp?new Date(+p.start_timestamp*1000).toLocaleTimeString('es-MX',{hour:'2-digit',minute:'2-digit'}):'';const te=p.stop_timestamp?new Date(+p.stop_timestamp*1000).toLocaleTimeString('es-MX',{hour:'2-digit',minute:'2-digit'}):'';return{title,time:ts&&te?`${ts} – ${te}`:''};}
     const cur=fmtProg(listings[0]);const nxt=listings[1]?fmtProg(listings[1]):null;
     epgEl.innerHTML=`<div class="live-epg-now"><span class="live-epg-label">Ahora</span><div class="live-epg-prog">${esc(cur.title)}</div>${cur.time?`<div class="live-epg-time">${cur.time}</div>`:''}</div>`+(nxt?`<div class="live-epg-next-block"><span class="live-epg-label">A continuación</span><div class="live-epg-prog">${esc(nxt.title)}</div>${nxt.time?`<div class="live-epg-time">${nxt.time}</div>`:''}</div>`:'');
   }catch{const el=document.getElementById('live-detail-epg');if(el)el.innerHTML='';}
