@@ -991,7 +991,7 @@ async function fetchEpgBatch(streams){
     await new Promise(r=>setTimeout(r,120));
   }
 }
-function playLive(id){const s=_liveStore[id]||{};const name=s.name||'',icon=s.stream_icon||'';S.currentPlayer={type:'live',id,name,icon};openPlayer(name);loadHls(document.getElementById('player-video'),`/xtream-live/${enc(S.creds.username)}/${enc(S.creds.password)}/${id}.m3u8`);updateFavBtn();}
+function playLive(id){const s=_liveStore[id]||{};const name=s.name||'',icon=s.stream_icon||'';S.currentPlayer={type:'live',id,name,icon};openPlayer(name);loadHls(document.getElementById('player-video'),`/.netlify/functions/hls-proxy?u=${enc(S.creds.username)}&p=${enc(S.creds.password)}&id=${id}`);updateFavBtn();}
 async function openLiveDetail(id){
   const s=_liveStore[id]||{};
   const name=s.name||'',icon=s.stream_icon||'';
@@ -1250,7 +1250,8 @@ function _makeHlsLoader(){
         var p=new URL(ctx.url,location.href);
         if(p.origin!==location.origin){
           var h=p.host,path=p.pathname;
-          if(h==='23.237.104.74:8080'||h==='23.237.104.74') ctx.url='/xtream-media'+path;
+          if(h==='23.237.74.2'||h==='23.237.74.2:80') ctx.url='/xtream-live-relay'+path;
+          else if(h==='23.237.104.74:8080'||h==='23.237.104.74') ctx.url='/xtream-media'+path;
           else if(h==='23.158.40.201:80'||h==='23.158.40.201') ctx.url='/xtream-vod-media'+path;
           else ctx.url='/xtream-chunks'+path;
         }
@@ -1502,7 +1503,7 @@ function _mvQueueDone(delay){
   _mvTimers['__q']=setTimeout(()=>{_mvTimers['__q']=null;_mvQueueBusy=false;_mvDrainQueue();},delay||2000);
 }
 function _buildMvCell(cell,slot,id,name){
-  const url=`/xtream-live/${enc(S.creds.username)}/${enc(S.creds.password)}/${id}.m3u8`;
+  const url=`/.netlify/functions/hls-proxy?u=${enc(S.creds.username)}&p=${enc(S.creds.password)}&id=${id}`;
   // Cancel any pending timer for this slot
   if(_mvTimers[slot]){clearTimeout(_mvTimers[slot]);_mvTimers[slot]=null;}
   // Destroy existing HLS
