@@ -991,7 +991,7 @@ async function fetchEpgBatch(streams){
     await new Promise(r=>setTimeout(r,120));
   }
 }
-function playLive(id){const s=_liveStore[id]||{};const name=s.name||'',icon=s.stream_icon||'';S.currentPlayer={type:'live',id,name,icon};openPlayer(name);loadHls(document.getElementById('player-video'),`/.netlify/functions/hls-proxy?u=${enc(S.creds.username)}&p=${enc(S.creds.password)}&id=${id}`);updateFavBtn();}
+function playLive(id){const s=_liveStore[id]||{};const name=s.name||'',icon=s.stream_icon||'';S.currentPlayer={type:'live',id,name,icon};openPlayer(name);loadHls(document.getElementById('player-video'),`/xtream-live/${enc(S.creds.username)}/${enc(S.creds.password)}/${id}.m3u8`);updateFavBtn();}
 async function openLiveDetail(id){
   const s=_liveStore[id]||{};
   const name=s.name||'',icon=s.stream_icon||'';
@@ -1236,6 +1236,32 @@ function showPlayerError(msg){
   if(loading){loading.querySelector('.player-spinner').style.display='none';}
   if(errEl){errEl.textContent=msg;errEl.style.display='block';}
 }
+// Custom HLS.js loader: rewrites external segment/playlist URLs to Netlify CDN proxies.
+// This ensures all requests stay same-origin (CSP connect-src 'self') AND that both
+// the m3u8 and its segments go through the same CDN edge IP (fixing 403 IP-binding issues).
+function _makeHlsLoader(){
+  var Base=Hls.DefaultConfig.loader;
+  function L(cfg){
+    var inner=new Base(cfg);
+    this.stats=inner.stats;this.context=null;
+    this.load=function(ctx,c,cb){
+      this.context=ctx;
+      try{
+        var p=new URL(ctx.url,location.href);
+        if(p.origin!==location.origin){
+          var h=p.host,path=p.pathname;
+          if(h==='23.237.104.74:8080'||h==='23.237.104.74') ctx.url='/xtream-media'+path;
+          else if(h==='23.158.40.201:80'||h==='23.158.40.201') ctx.url='/xtream-vod-media'+path;
+          else ctx.url='/xtream-chunks'+path;
+        }
+      }catch(e){}
+      inner.load.call(inner,ctx,c,cb);
+    };
+    this.abort=function(){if(inner.abort)inner.abort.call(inner);};
+    this.destroy=function(){if(inner.destroy)inner.destroy.call(inner);};
+  }
+  return L;
+}
 function loadHls(videoEl,url){
   _vodToken++;
   const myToken=_vodToken;
@@ -1253,7 +1279,19 @@ function _doLoadHls(videoEl,url,myToken,retryCount){
   if(loading)loading.querySelector('.player-spinner').style.display='block';
   if(errEl)errEl.style.display='none';
   if(Hls.isSupported()){
-    _hls=new Hls({enableWorker:true,lowLatencyMode:false,backBufferLength:30});
+    _hls=new Hls({
+      enableWorker:false,
+      lowLatencyMode:false,
+      backBufferLength:30,
+      manifestLoadingTimeOut:12000,
+      levelLoadingTimeOut:12000,
+      fragLoadingTimeOut:20000,
+      manifestLoadingMaxRetry:0,
+      levelLoadingMaxRetry:2,
+      fragLoadingMaxRetry:3,
+      loader:_makeHlsLoader(),
+    });
+    console.log('[TEUTV] loadSource',url);
     _hls.loadSource(url);_hls.attachMedia(videoEl);
     _hls.on(Hls.Events.MANIFEST_PARSED,()=>{if(myToken!==_vodToken)return;if(loading)loading.style.display='none';videoEl.play().catch(()=>{});_startStallWatchdog(videoEl,url,myToken);});
     _hls.on(Hls.Events.ERROR,(_,d)=>{
@@ -1464,7 +1502,7 @@ function _mvQueueDone(delay){
   _mvTimers['__q']=setTimeout(()=>{_mvTimers['__q']=null;_mvQueueBusy=false;_mvDrainQueue();},delay||2000);
 }
 function _buildMvCell(cell,slot,id,name){
-  const url=`/.netlify/functions/hls-proxy?u=${enc(S.creds.username)}&p=${enc(S.creds.password)}&id=${id}`;
+  const url=`/xtream-live/${enc(S.creds.username)}/${enc(S.creds.password)}/${id}.m3u8`;
   // Cancel any pending timer for this slot
   if(_mvTimers[slot]){clearTimeout(_mvTimers[slot]);_mvTimers[slot]=null;}
   // Destroy existing HLS
@@ -1506,12 +1544,13 @@ function _startMvHls(vid,url,slot,retryCount){
       maxBufferLength:8,
       maxMaxBufferLength:16,
       startLevel:-1,
-      fragLoadingTimeOut:30000,
-      manifestLoadingTimeOut:30000,
-      levelLoadingTimeOut:30000,
+      fragLoadingTimeOut:20000,
+      manifestLoadingTimeOut:12000,
+      levelLoadingTimeOut:12000,
       fragLoadingMaxRetry:3,
-      manifestLoadingMaxRetry:2,
+      manifestLoadingMaxRetry:1,
       levelLoadingMaxRetry:2,
+      loader:_makeHlsLoader(),
     });
     h.loadSource(url);h.attachMedia(vid);
     h.on(Hls.Events.MANIFEST_PARSED,()=>{
