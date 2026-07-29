@@ -1600,7 +1600,6 @@ function _startMvHls(vid,url,slot,retryCount){
         err.innerHTML=`<i class="fa-solid fa-circle-exclamation"></i><span>Sin señal</span><button onclick="event.stopPropagation();_rebuildMvSlot(${slot})" style="background:var(--celeste);border:none;color:#000;border-radius:99px;padding:5px 14px;font-size:12px;cursor:pointer;font-family:Poppins,sans-serif;font-weight:600">Reintentar</button>`;
         c.appendChild(err);
         _mvQueueDone(500);
-      }
     });
     S.mvHls[slot]=h;
   } else if(vid.canPlayType('application/vnd.apple.mpegurl')){
