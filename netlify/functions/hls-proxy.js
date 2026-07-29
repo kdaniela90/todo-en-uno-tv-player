@@ -84,7 +84,20 @@ function rewriteSegments(m3u8, finalBase, IPTV) {
       if (uri.startsWith('http')) abs = uri;
       else if (uri.startsWith('/')) abs = new URL(uri, IPTV).href;
       else abs = new URL(uri, finalBase).href;
-      return '/xtream-media' + new URL(abs).pathname;
+      const parsed = new URL(abs);
+      const path = parsed.pathname;
+      const host = parsed.host;
+      // Route to the correct CDN proxy based on the actual segment host.
+      // 23.237.104.74:8080 = live media server → /xtream-media/
+      // 23.158.40.201       = VOD media server  → /xtream-vod-media/
+      // everything else (allinonestream.xyz or unknown) → /xtream-chunks/
+      if (host === '23.237.104.74:8080' || host === '23.237.104.74') {
+        return '/xtream-media' + path;
+      }
+      if (host === '23.158.40.201:80' || host === '23.158.40.201') {
+        return '/xtream-vod-media' + path;
+      }
+      return '/xtream-chunks' + path;
     } catch {
       return uri;
     }

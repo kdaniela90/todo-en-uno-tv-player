@@ -1253,11 +1253,12 @@ function _doLoadHls(videoEl,url,myToken,retryCount){
   if(loading)loading.querySelector('.player-spinner').style.display='block';
   if(errEl)errEl.style.display='none';
   if(Hls.isSupported()){
-    _hls=new Hls({enableWorker:true,lowLatencyMode:true,xhrSetup:(xhr)=>{xhr.timeout=20000;}});
+    _hls=new Hls({enableWorker:true,lowLatencyMode:false,backBufferLength:30});
     _hls.loadSource(url);_hls.attachMedia(videoEl);
     _hls.on(Hls.Events.MANIFEST_PARSED,()=>{if(myToken!==_vodToken)return;if(loading)loading.style.display='none';videoEl.play().catch(()=>{});_startStallWatchdog(videoEl,url,myToken);});
     _hls.on(Hls.Events.ERROR,(_,d)=>{
       if(myToken!==_vodToken)return;
+      console.warn('[TEUTV HLS]',d.type,d.details,d.fatal?'FATAL':'',d.url||'',(d.response&&d.response.code)||'');
       if(d.fatal){
         _stopStallWatchdog();_hls.destroy();_hls=null;
         if(retryCount<1){setTimeout(()=>_doLoadHls(videoEl,url,myToken,1),5000);return;}
