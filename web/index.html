@@ -970,7 +970,7 @@ function renderLiveChannels(){
   streams=streams.filter(s=>!S.blockedCats.has(s.category_id));
   const el=document.getElementById('live-channels');
   if(!streams.length){el.innerHTML='<p style="color:var(--text-muted);padding:24px 0">Sin canales.</p>';return;}
-  const visible=streams.slice(0,200);
+  const visible=streams;
   visible.forEach(s=>{_liveStore[s.stream_id]=s;});
   el.innerHTML=visible.map(s=>`<div class="channel-card" onclick="openLiveDetail(${s.stream_id})">
     <img class="channel-thumb" src="${esc(s.stream_icon||'')}" onerror="this.style.display='none'" loading="lazy">
@@ -1260,8 +1260,9 @@ function _makeHlsLoader(){
       try{
         var p=new URL(ctx.url,location.href);
         if(p.origin!==location.origin){
-          var h=p.host,path=p.pathname;
-          if(h==='23.237.74.2'||h==='23.237.74.2:80') ctx.url='/xtream-live-relay'+path;
+          var h=p.host,path=p.pathname+(p.search||'');
+          if(h==='216.106.177.68'||h==='216.106.177.68:80') ctx.url='/xtream-stream-hls'+path;
+          else if(h==='23.237.74.2'||h==='23.237.74.2:80') ctx.url='/xtream-live-relay'+path;
           else if(h==='23.237.104.74:8080'||h==='23.237.104.74') ctx.url='/xtream-media'+path;
           else if(h==='23.158.40.201:80'||h==='23.158.40.201') ctx.url='/xtream-vod-media'+path;
           else ctx.url='/xtream-chunks'+path;
@@ -1343,28 +1344,42 @@ function _doLoadVod(videoEl,url,resumePos,myToken,retryCount){
   if(loading)loading.querySelector('.player-spinner').style.display='block';
   if(errEl)errEl.style.display='none';
   videoEl.pause();
-  videoEl.src=url;
-  let _hasLoaded=false;
-  videoEl.addEventListener('loadedmetadata',()=>{
+  function _applySrc(srcUrl){
     if(myToken!==_vodToken)return;
-    _hasLoaded=true;
-    if(loading)loading.style.display='none';
-    if(resumePos&&resumePos>0)videoEl.currentTime=resumePos;
-    videoEl.play().catch(()=>{});
-    _progressTimer=setInterval(()=>{
-      if(myToken!==_vodToken){clearInterval(_progressTimer);_progressTimer=null;return;}
-      const dur=videoEl.duration,pos=videoEl.currentTime;
-      if(!dur||dur<30||!S.currentPlayer)return;
-      if(pos/dur>0.92){_clearProgress(S.currentPlayer.type,S.currentPlayer.id);return;}
-      _saveProgress(S.currentPlayer.type,S.currentPlayer.id,pos,dur);
-    },15000);
-  },{once:true});
-  videoEl.addEventListener('error',()=>{
-    if(myToken!==_vodToken)return;
-    if(_hasLoaded)return;
-    if(retryCount<1){setTimeout(()=>_doLoadVod(videoEl,url,resumePos,myToken,1),5000);return;}
-    showPlayerError('No se pudo cargar el video. El servidor puede estar ocupado.');
-  },{once:true});
+    let _hasLoaded=false;
+    videoEl.addEventListener('loadedmetadata',()=>{
+      if(myToken!==_vodToken)return;
+      _hasLoaded=true;
+      if(loading)loading.style.display='none';
+      if(resumePos&&resumePos>0)videoEl.currentTime=resumePos;
+      videoEl.play().catch(()=>{});
+      _progressTimer=setInterval(()=>{
+        if(myToken!==_vodToken){clearInterval(_progressTimer);_progressTimer=null;return;}
+        const dur=videoEl.duration,pos=videoEl.currentTime;
+        if(!dur||dur<30||!S.currentPlayer)return;
+        if(pos/dur>0.92){_clearProgress(S.currentPlayer.type,S.currentPlayer.id);return;}
+        _saveProgress(S.currentPlayer.type,S.currentPlayer.id,pos,dur);
+      },15000);
+    },{once:true});
+    videoEl.addEventListener('error',()=>{
+      if(myToken!==_vodToken)return;
+      if(_hasLoaded)return;
+      // En el retry usamos la URL original (vod-resolve) para que vuelva a intentar todo el flujo
+      if(retryCount<1){setTimeout(()=>_doLoadVod(videoEl,url,resumePos,myToken,1),5000);return;}
+      showPlayerError('No se pudo cargar el video. El servidor puede estar ocupado.');
+    },{once:true});
+    videoEl.src=srcUrl;
+  }
+  if(retryCount===0){
+    // Pre-resolver: fetch Range:bytes=0-0 para capturar la URL final tras los redirects de vod-resolve.
+    // Si vod-resolve resuelve el token → resp.url = /xtream-vod-media/TOKEN (estable).
+    // El video element usa esa URL fija → todas las Range Requests van al mismo token → funciona el seek.
+    fetch(url,{redirect:'follow',headers:{'Range':'bytes=0-0'}})
+      .then(r=>{_applySrc((r.url&&r.url.startsWith('https://'))?r.url:url);})
+      .catch(()=>{_applySrc(url);});
+  } else {
+    _applySrc(url);
+  }
 }
 function toggleFullscreen(){
   const v=document.getElementById('player-video');
@@ -1573,11 +1588,7 @@ function _startMvHls(vid,url,slot,retryCount){
       _mvQueueDone(2000);
     });
     h.on(Hls.Events.ERROR,(_,d)=>{
-      if(!d.fatal){
-        // Non-fatal network stall: nudge HLS to reload without killing the stream
-        if(d.type===Hls.ErrorTypes.NETWORK_ERROR) h.startLoad();
-        return;
-      }
+      if(!d.fatal){return;} // Non-fatal: HLS.js maneja reintentos internamente; no interrumpir
       // Fatal error
       if(d.type===Hls.ErrorTypes.MEDIA_ERROR&&!_mediaRecovered){
         _mediaRecovered=true; h.recoverMediaError(); return;
