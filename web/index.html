@@ -869,12 +869,36 @@ async function doLogin(){
 }
 function loginErr(m){const e=document.getElementById('login-err');e.textContent=m;e.style.display='block';}
 
+// Formatea exp_date de Xtream Codes — acepta Unix timestamp (segundos), string de fecha, o null.
+function _fmtExpDate(v){
+  // null, 0 o "0" → cuenta sin vencimiento
+  if(v===null||v===undefined||v===''||v==='0'||v===0)return 'Sin vencimiento';
+  const n=Number(v);
+  let d;
+  if(!isNaN(n)&&n>86400){
+    // Unix timestamp en segundos (el formato estándar de Xtream Codes)
+    d=new Date(n*1000);
+  }else{
+    // Algunos paneles devuelven la fecha ya como string ("2025-12-31")
+    d=new Date(v);
+  }
+  if(isNaN(d.getTime()))return String(v); // si no parsea, devuelve el valor raw
+  const opts={day:'2-digit',month:'long',year:'numeric'};
+  const dateStr=d.toLocaleDateString('es-MX',opts);
+  // Días restantes
+  const diffMs=d.getTime()-Date.now();
+  const diffDays=Math.ceil(diffMs/(1000*60*60*24));
+  if(diffDays<0)return `${dateStr} (expirado)`;
+  if(diffDays<=30)return `${dateStr} (${diffDays} días)`;
+  return dateStr;
+}
+
 // ── START ──
 function startApp(){
   ['screen-splash','screen-login','screen-player'].forEach(id=>document.getElementById(id).classList.remove('active'));
   document.getElementById('screen-app').classList.add('active');
   document.getElementById('set-user-val').textContent=S.creds.username||'—';
-  if(S.creds.userInfo&&S.creds.userInfo.exp_date){const d=new Date(parseInt(S.creds.userInfo.exp_date)*1000);document.getElementById('set-expiry-val').textContent=d.toLocaleDateString('es-MX');}
+  document.getElementById('set-expiry-val').textContent=_fmtExpDate(S.creds.userInfo?.exp_date);
   if(typeof Notification!=='undefined'&&Notification.permission==='granted'){const nt=document.getElementById('notif-toggle');if(nt)nt.classList.add('on');}
   fetchAllData();showSection('hub');
 }
@@ -1311,14 +1335,15 @@ function _doLoadHls(videoEl,url,myToken,retryCount){
     _hls.on(Hls.Events.MANIFEST_PARSED,()=>{if(myToken!==_vodToken)return;if(loading)loading.style.display='none';videoEl.play().catch(()=>{});_startStallWatchdog(videoEl,url,myToken);});
     _hls.on(Hls.Events.ERROR,(_,d)=>{
       if(myToken!==_vodToken)return;
-      console.warn('[TEUTV HLS]',d.type,d.details,d.fatal?'FATAL':'',d.url||'',(d.response&&d.response.code)||'');
+      console.warn('[TEUTV HLS] ERROR',d.type,d.details,d.fatal?'FATAL':'non-fatal','url:',d.url||'(manifest)','http:',d.response?.code||'—','response:',d.response?.text||'');
       if(d.fatal){
         _stopStallWatchdog();_hls.destroy();_hls=null;
         const httpCode=d.response&&d.response.code;
         if(httpCode===403||httpCode===401){
-          // 403 = IPTV rechazó la conexión (límite alcanzado o cuenta suspendida)
-          // NO reintentar: cada reintento crea una conexión fantasma en IPTV
-          showPlayerError('Límite de conexiones alcanzado. Espera un momento y vuelve a intentarlo.');
+          // 403/401 = IPTV rechazó la solicitud. Causas posibles:
+          // límite de conexiones alcanzado, cuenta suspendida, o IPs bloqueadas.
+          // NO reintentar: cada reintento puede crear conexiones fantasma.
+          showPlayerError('Stream no disponible (403). Puede ser límite de conexiones, cuenta suspendida, o canal no incluido en tu plan.');
           return;
         }
         // Para errores de red reales: esperar 30s antes de reintentar
