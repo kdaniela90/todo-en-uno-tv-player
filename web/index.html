@@ -1597,24 +1597,31 @@ function _startMvHls(vid,url,slot,retryCount){
     const h=new Hls({
       enableWorker:false,
       lowLatencyMode:false,
-      maxBufferLength:4,        // 4s en lugar de 8s — arranca antes
+      maxBufferLength:4,
       maxMaxBufferLength:8,
       startLevel:-1,
-      liveSyncDurationCount:2,  // sincroniza en vivo más rápido
-      fragLoadingTimeOut:10000,
-      manifestLoadingTimeOut:15000,
-      levelLoadingTimeOut:15000,
-      fragLoadingMaxRetry:4,
-      manifestLoadingMaxRetry:2,
-      levelLoadingMaxRetry:3,
+      liveSyncDurationCount:2,
+      // Timeouts cortos → HLS.js falla rápido y nos cede el control
+      // Si HLS.js reintenta 4×10s internamente = 40s de negro. Con estos valores: 2×5s = ~12s max
+      fragLoadingTimeOut:5000,
+      manifestLoadingTimeOut:8000,
+      levelLoadingTimeOut:8000,
+      fragLoadingMaxRetry:1,        // 1 reintento interno — luego manda fatal y nosotros actuamos
+      manifestLoadingMaxRetry:1,
+      levelLoadingMaxRetry:1,
       loader:_makeHlsLoader(),
     });
     let _mediaRecovered=false;
+    // Spinner dinámico: aparece cuando el video espera datos, desaparece cuando reproduce
+    const _showSp=()=>{const c=document.getElementById(`mv-cell-${slot}`);if(c&&!c.querySelector('.mv-loading')&&!c.querySelector('.mv-cell-err')){const sp=document.createElement('div');sp.className='mv-loading';c.appendChild(sp);}};
+    const _hideSp=()=>{document.getElementById(`mv-cell-${slot}`)?.querySelector('.mv-loading')?.remove();};
+    vid.addEventListener('waiting',_showSp);
+    vid.addEventListener('playing',_hideSp);
     h.loadSource(url);h.attachMedia(vid);
     h.on(Hls.Events.MANIFEST_PARSED,()=>{
       vid.play().catch(()=>{});
-      // Quitar spinner de carga — el stream ya respondió
-      const sp=document.getElementById(`mv-cell-${slot}`)?.querySelector('.mv-loading');if(sp)sp.remove();
+      // Quitar spinner inicial — el manifest llegó
+      _hideSp();
       // Stall watchdog: si currentTime no avanza durante 20s → reconstruir sin mostrar error
       let _lastCt=-1,_stuckTicks=0;
       _mvTimers[slot+'_stall']=setInterval(()=>{
@@ -1626,7 +1633,11 @@ function _startMvHls(vid,url,slot,retryCount){
             clearInterval(_mvTimers[slot+'_stall']);_mvTimers[slot+'_stall']=null;
             h.destroy();if(S.mvHls[slot]===h)S.mvHls[slot]=null;
             const c=document.getElementById(`mv-cell-${slot}`);
-            if(c&&c.querySelector('video')===vid)_mvEnqueue(vid,url,slot,0);
+            if(c&&c.querySelector('video')===vid){
+              // Spinner inmediato al detectar stall — el negro desaparece
+              if(!c.querySelector('.mv-loading')&&!c.querySelector('.mv-cell-err')){const sp=document.createElement('div');sp.className='mv-loading';c.appendChild(sp);}
+              _mvEnqueue(vid,url,slot,0);
+            }
           }
         }else{_lastCt=ct;_stuckTicks=0;}
       },5000);
@@ -1643,10 +1654,14 @@ function _startMvHls(vid,url,slot,retryCount){
       h.destroy();if(S.mvHls[slot]===h)S.mvHls[slot]=null;
       const c=document.getElementById(`mv-cell-${slot}`);
       if(!c||c.querySelector('video')!==vid){_mvQueueDone(500);return;}
-      // Backoff exponencial: 1s → 5s → 15s → 30s → 30s → mostrar error (5 reintentos silenciosos)
-      const delays=[1000,5000,15000,30000,30000];
-      if(retryCount<5){
-        const delay=delays[retryCount]||30000;
+      // Backoff: 1s → 3s → 8s → mostrar "sin señal" (3 reintentos rápidos)
+      // HLS.js ya hizo reintentos internos; aquí pedimos M3U8 fresco al proxy
+      const delays=[1000,3000,8000];
+      if(retryCount<3){
+        const delay=delays[retryCount]||8000;
+        // Mostrar spinner mientras esperamos el próximo reintento
+        const _c=document.getElementById(`mv-cell-${slot}`);
+        if(_c&&!_c.querySelector('.mv-loading')&&!_c.querySelector('.mv-cell-err')){const sp=document.createElement('div');sp.className='mv-loading';_c.appendChild(sp);}
         _mvTimers[slot]=setTimeout(()=>{
           _mvTimers[slot]=null;
           const still=document.getElementById(`mv-cell-${slot}`);
