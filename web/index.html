@@ -1373,36 +1373,30 @@ function _doLoadVod(videoEl,url,resumePos,myToken,retryCount){
     },{once:true});
     videoEl.src=srcUrl;
   }
+  // Construir URL CDN directa desde los params (funciona sin vod-resolve)
+  const params=new URLSearchParams(url.split('?')[1]||'');
+  const _u=params.get('u'),_p=params.get('p'),_id=params.get('id');
+  const _ext=params.get('ext')||'mp4',_type=params.get('type')||'movie';
+  const _prefix=_type==='series'?'xtream-series':'xtream-vod';
+  const cdnDirect=`/${_prefix}/${_u}/${_p}/${_id}.${_ext}`;
+
   if(retryCount===0){
-    // Pre-resolver: sigue los redirects de /api/vod-resolve para capturar la URL
-    // estable del media server (token incluido en la ruta).
-    // Solo usamos r.url si aterrizó en un CDN proxy path (/xtream-*).
-    // Si vod-resolve falla (500) o el token no se capturó, construimos
-    // el CDN fallback directamente desde los params de la URL original.
-    const params=new URLSearchParams(url.split('?')[1]||'');
-    const _u=params.get('u'),_p=params.get('p'),_id=params.get('id');
-    const _ext=params.get('ext')||'mp4',_type=params.get('type')||'movie';
-    const _prefix=_type==='series'?'xtream-series':'xtream-vod';
-    const cdnFallback=`/${_prefix}/${_u}/${_p}/${_id}.${_ext}`;
-    fetch(url,{redirect:'follow',headers:{'Range':'bytes=0-0'}})
+    // Intentar capturar URL estable vía vod-resolve (mejor para seeking)
+    // Timeout de 4s: si falla o tarda, cae directo al CDN proxy
+    const abortCtrl=new AbortController();
+    const tId=setTimeout(()=>abortCtrl.abort(),4000);
+    fetch(url,{redirect:'follow',signal:abortCtrl.signal})
       .then(r=>{
+        clearTimeout(tId);
+        r.body?.cancel(); // No descargar el cuerpo del video
         const finalUrl=r.url||'';
-        // Usar URL resuelta solo si aterrizó en uno de nuestros CDN proxy paths
-        if(finalUrl.includes('/xtream-')&&finalUrl.startsWith('https://')){
-          _applySrc(finalUrl);
-        }else{
-          // Fallo de vod-resolve → usar CDN proxy directo
-          _applySrc(cdnFallback);
-        }
+        // Usar URL resuelta solo si terminó en nuestros paths CDN proxy
+        _applySrc(finalUrl.includes('/xtream-')&&finalUrl.startsWith('https://')?finalUrl:cdnDirect);
       })
-      .catch(()=>{_applySrc(cdnFallback);});
-  } else {
-    // Retry: usar CDN proxy directo (sin pasar por vod-resolve)
-    const params=new URLSearchParams(url.split('?')[1]||'');
-    const _u=params.get('u'),_p=params.get('p'),_id=params.get('id');
-    const _ext=params.get('ext')||'mp4',_type=params.get('type')||'movie';
-    const _prefix=_type==='series'?'xtream-series':'xtream-vod';
-    _applySrc(`/${_prefix}/${_u}/${_p}/${_id}.${_ext}`);
+      .catch(()=>{clearTimeout(tId);_applySrc(cdnDirect);});
+  }else{
+    // Retry o direct: CDN proxy sin vod-resolve
+    _applySrc(cdnDirect);
   }
 }
 function toggleFullscreen(){
@@ -1529,35 +1523,40 @@ function renderMultiview(){
   }
 }
 const _mvTimers={};
-// Sequential queue: one HLS stream starts at a time, next begins only after MANIFEST_PARSED or error
-const _mvQueue=[];
-let _mvQueueBusy=false;
-function _mvEnqueue(vid,url,slot,retry){
-  // Remove any existing pending entry for this slot
-  for(let i=_mvQueue.length-1;i>=0;i--){if(_mvQueue[i].slot===slot)_mvQueue.splice(i,1);}
-  _mvQueue.push({vid,url,slot,retry:retry||0});
-  _mvDrainQueue();
+const _mvStallCount={}; // Intentos de stall por slot — se resetea al cambiar canal o rebuild manual
+// Programa inicio de HLS con delay (carga paralela con stagger — sin queue secuencial)
+function _schedMvStart(vid,url,slot,retryCount,delay){
+  if(_mvTimers[slot+'_sched']){clearTimeout(_mvTimers[slot+'_sched']);_mvTimers[slot+'_sched']=null;}
+  _mvTimers[slot+'_sched']=setTimeout(()=>{
+    _mvTimers[slot+'_sched']=null;
+    const c=document.getElementById(`mv-cell-${slot}`);
+    if(!c||c.querySelector('video')!==vid)return;
+    _startMvHls(vid,url,slot,retryCount);
+  },delay||0);
 }
-function _mvDrainQueue(){
-  if(_mvQueueBusy||_mvQueue.length===0)return;
-  _mvQueueBusy=true;
-  const item=_mvQueue.shift();
-  const {vid,url,slot,retry}=item;
-  // Verify slot still valid before starting
-  const c=document.getElementById(`mv-cell-${slot}`);
-  if(!c||c.querySelector('video')!==vid){_mvQueueBusy=false;_mvDrainQueue();return;}
-  _startMvHls(vid,url,slot,retry);
-}
-function _mvQueueDone(delay){
-  // Release queue lock after delay so next stream doesn't hammer server
-  if(_mvTimers['__q']){clearTimeout(_mvTimers['__q']);}
-  _mvTimers['__q']=setTimeout(()=>{_mvTimers['__q']=null;_mvQueueBusy=false;_mvDrainQueue();},delay||2000);
+// Muestra "Sin señal" — siempre limpia el spinner primero, programa auto-retry cada 60s
+function _showSinSenal(c,slot,vid,url){
+  c.querySelector('.mv-loading')?.remove(); // crítico: quitar spinner antes del overlay
+  const existing=c.querySelector('.mv-cell-err');if(existing)existing.remove();
+  const err=document.createElement('div');err.className='mv-cell-err';
+  err.innerHTML=`<i class="fa-solid fa-circle-exclamation"></i><span>Sin señal</span><button onclick="event.stopPropagation();_rebuildMvSlot(${slot})" style="background:var(--celeste);border:none;color:#000;border-radius:99px;padding:5px 14px;font-size:12px;cursor:pointer;font-family:Poppins,sans-serif;font-weight:600">Reintentar</button>`;
+  c.appendChild(err);
+  if(_mvTimers[slot+'_auto']){clearInterval(_mvTimers[slot+'_auto']);_mvTimers[slot+'_auto']=null;}
+  _mvTimers[slot+'_auto']=setInterval(()=>{
+    const still=document.getElementById(`mv-cell-${slot}`);
+    if(!still||still.querySelector('video')!==vid){clearInterval(_mvTimers[slot+'_auto']);_mvTimers[slot+'_auto']=null;return;}
+    if(!still.querySelector('.mv-cell-err')){clearInterval(_mvTimers[slot+'_auto']);_mvTimers[slot+'_auto']=null;return;}
+    _mvStallCount[slot]=0;
+    _schedMvStart(vid,url,slot,0,0);
+  },60000);
 }
 function _buildMvCell(cell,slot,id,name){
   const url=`/.netlify/functions/hls-proxy?u=${enc(S.creds.username)}&p=${enc(S.creds.password)}&id=${id}`;
-  // Cancel any pending timer for this slot
-  if(_mvTimers[slot]){clearTimeout(_mvTimers[slot]);_mvTimers[slot]=null;}
-  // Destroy existing HLS
+  // Cancelar todos los timers pendientes del slot
+  ['','_stall','_auto','_sched'].forEach(k=>{
+    const key=`${slot}${k}`;
+    if(_mvTimers[key]){k===''||k==='_sched'?clearTimeout(_mvTimers[key]):clearInterval(_mvTimers[key]);_mvTimers[key]=null;}
+  });
   if(S.mvHls[slot]){S.mvHls[slot].destroy();S.mvHls[slot]=null;}
 
   const vid=document.createElement('video');
@@ -1567,30 +1566,23 @@ function _buildMvCell(cell,slot,id,name){
 
   cell.innerHTML='';cell.appendChild(vid);
 
-  // Audio button
   const audioBtn=document.createElement('button');audioBtn.className='mv-audio-btn';
   audioBtn.innerHTML='<i class="fa-solid fa-volume-xmark"></i>';audioBtn.title='Activar audio';
   audioBtn.onclick=(e)=>{e.stopPropagation();mvSelectAudio(slot);};cell.appendChild(audioBtn);
-  // Close button
   const closeBtn=document.createElement('button');closeBtn.className='mv-cell-close';
   closeBtn.innerHTML='<i class="fa-solid fa-xmark"></i>';
   closeBtn.onclick=(e)=>{e.stopPropagation();clearMvSlot(slot);};cell.appendChild(closeBtn);
-  // Label
   const label=document.createElement('div');label.className='mv-cell-label';label.textContent=name;cell.appendChild(label);
-  // Tap cell = select audio
   cell.onclick=()=>mvSelectAudio(slot);
 
-  // Apply current audio/mute state
   const isAudio=(S.mvAudioSlot===slot);
   vid.muted=!isAudio;
   if(isAudio){cell.classList.add('mv-audio-active');audioBtn.innerHTML='<i class="fa-solid fa-volume-high"></i>';}
 
-  // Limpiar stall watchdog anterior si lo hubiera
-  if(_mvTimers[slot+'_stall']){clearInterval(_mvTimers[slot+'_stall']);_mvTimers[slot+'_stall']=null;}
-  // Spinner de carga inmediato — el usuario ve feedback desde el primer momento
   const spinner=document.createElement('div');spinner.className='mv-loading';cell.appendChild(spinner);
-  // Add to sequential queue — starts only when previous stream has confirmed loading
-  _mvEnqueue(vid,url,slot,0);
+  // Reset contador de stalls y arrancar con stagger de 1s por slot (0s, 1s, 2s, 3s)
+  _mvStallCount[slot]=0;
+  _schedMvStart(vid,url,slot,0,slot*1000);
 }
 function _startMvHls(vid,url,slot,retryCount){
   if(Hls.isSupported()){
@@ -1601,109 +1593,97 @@ function _startMvHls(vid,url,slot,retryCount){
       maxMaxBufferLength:8,
       startLevel:-1,
       liveSyncDurationCount:2,
-      // Timeouts cortos → HLS.js falla rápido y nos cede el control
-      // Si HLS.js reintenta 4×10s internamente = 40s de negro. Con estos valores: 2×5s = ~12s max
+      // Timeouts cortos: HLS.js falla rápido y nos cede el control antes de 22s de hard timeout
       fragLoadingTimeOut:5000,
       manifestLoadingTimeOut:8000,
       levelLoadingTimeOut:8000,
-      fragLoadingMaxRetry:1,        // 1 reintento interno — luego manda fatal y nosotros actuamos
+      fragLoadingMaxRetry:1,
       manifestLoadingMaxRetry:1,
       levelLoadingMaxRetry:1,
       loader:_makeHlsLoader(),
     });
     let _mediaRecovered=false;
-    // Spinner dinámico: aparece cuando el video espera datos, desaparece cuando reproduce
     const _showSp=()=>{const c=document.getElementById(`mv-cell-${slot}`);if(c&&!c.querySelector('.mv-loading')&&!c.querySelector('.mv-cell-err')){const sp=document.createElement('div');sp.className='mv-loading';c.appendChild(sp);}};
     const _hideSp=()=>{document.getElementById(`mv-cell-${slot}`)?.querySelector('.mv-loading')?.remove();};
     vid.addEventListener('waiting',_showSp);
     vid.addEventListener('playing',_hideSp);
+
+    // Hard timeout: si en 22s no llega MANIFEST_PARSED ni error fatal → forzar reintento
+    // Cubre casos raros donde el proxy no responde nada (ni OK ni error)
+    let _gotEvent=false;
+    const _hardTimer=setTimeout(()=>{
+      if(_gotEvent||S.mvHls[slot]!==h)return;
+      clearInterval(_mvTimers[slot+'_stall']);_mvTimers[slot+'_stall']=null;
+      h.destroy();if(S.mvHls[slot]===h)S.mvHls[slot]=null;
+      const c=document.getElementById(`mv-cell-${slot}`);
+      if(!c||c.querySelector('video')!==vid)return;
+      const delays=[1000,3000,8000];
+      if(retryCount<3){
+        if(!c.querySelector('.mv-loading')&&!c.querySelector('.mv-cell-err')){const sp=document.createElement('div');sp.className='mv-loading';c.appendChild(sp);}
+        _schedMvStart(vid,url,slot,retryCount+1,delays[retryCount]||8000);
+      }else{_showSinSenal(c,slot,vid,url);}
+    },22000);
+
     h.loadSource(url);h.attachMedia(vid);
     h.on(Hls.Events.MANIFEST_PARSED,()=>{
+      _gotEvent=true;clearTimeout(_hardTimer);
       vid.play().catch(()=>{});
-      // Quitar spinner inicial — el manifest llegó
       _hideSp();
-      // Stall watchdog: si currentTime no avanza durante 20s → reconstruir sin mostrar error
       let _lastCt=-1,_stuckTicks=0;
       _mvTimers[slot+'_stall']=setInterval(()=>{
         if(!S.mvHls||S.mvHls[slot]!==h){clearInterval(_mvTimers[slot+'_stall']);_mvTimers[slot+'_stall']=null;return;}
-        if(vid.paused||vid.ended)return;
+        if(vid.ended)return;
         const ct=vid.currentTime;
-        if(ct===_lastCt){
-          if(++_stuckTicks>=4){ // 4×5s=20s congelado → reiniciar limpiamente
+        // Ignorar pausa voluntaria (usuario pausó, ct>0) pero NO ignorar ct=0 paused
+        // — ct=0 paused significa que nunca arrancó (autoplay bloqueado o stream sin datos)
+        if(vid.paused&&ct>0)return;
+        if(ct===_lastCt||ct===0){
+          if(++_stuckTicks>=4){ // 4×5s=20s sin avanzar → problema real
             clearInterval(_mvTimers[slot+'_stall']);_mvTimers[slot+'_stall']=null;
             h.destroy();if(S.mvHls[slot]===h)S.mvHls[slot]=null;
             const c=document.getElementById(`mv-cell-${slot}`);
             if(c&&c.querySelector('video')===vid){
-              // Spinner inmediato al detectar stall — el negro desaparece
-              if(!c.querySelector('.mv-loading')&&!c.querySelector('.mv-cell-err')){const sp=document.createElement('div');sp.className='mv-loading';c.appendChild(sp);}
-              _mvEnqueue(vid,url,slot,0);
+              _mvStallCount[slot]=(_mvStallCount[slot]||0)+1;
+              if(_mvStallCount[slot]>3){
+                // Demasiados stalls consecutivos → rendirse y mostrar sin señal
+                _showSinSenal(c,slot,vid,url);
+              }else{
+                if(!c.querySelector('.mv-loading')&&!c.querySelector('.mv-cell-err')){const sp=document.createElement('div');sp.className='mv-loading';c.appendChild(sp);}
+                _schedMvStart(vid,url,slot,0,2000);
+              }
             }
           }
         }else{_lastCt=ct;_stuckTicks=0;}
       },5000);
-      // Stream confirmado — liberar queue al siguiente slot con 800ms de gap (antes 2s)
-      _mvQueueDone(800);
     });
     h.on(Hls.Events.ERROR,(_,d)=>{
-      if(!d.fatal){return;} // Non-fatal: HLS.js maneja reintentos internamente; no interrumpir
-      // Fatal error
+      if(!d.fatal){return;}
+      _gotEvent=true;clearTimeout(_hardTimer);
       if(d.type===Hls.ErrorTypes.MEDIA_ERROR&&!_mediaRecovered){
-        _mediaRecovered=true; h.recoverMediaError(); return;
+        _mediaRecovered=true;h.recoverMediaError();return;
       }
       clearInterval(_mvTimers[slot+'_stall']);_mvTimers[slot+'_stall']=null;
       h.destroy();if(S.mvHls[slot]===h)S.mvHls[slot]=null;
       const c=document.getElementById(`mv-cell-${slot}`);
-      if(!c||c.querySelector('video')!==vid){_mvQueueDone(500);return;}
-      // Backoff: 1s → 3s → 8s → mostrar "sin señal" (3 reintentos rápidos)
-      // HLS.js ya hizo reintentos internos; aquí pedimos M3U8 fresco al proxy
+      if(!c||c.querySelector('video')!==vid)return;
       const delays=[1000,3000,8000];
       if(retryCount<3){
         const delay=delays[retryCount]||8000;
-        // Mostrar spinner mientras esperamos el próximo reintento
-        const _c=document.getElementById(`mv-cell-${slot}`);
-        if(_c&&!_c.querySelector('.mv-loading')&&!_c.querySelector('.mv-cell-err')){const sp=document.createElement('div');sp.className='mv-loading';_c.appendChild(sp);}
-        _mvTimers[slot]=setTimeout(()=>{
-          _mvTimers[slot]=null;
-          const still=document.getElementById(`mv-cell-${slot}`);
-          if(!still||still.querySelector('video')!==vid)return;
-          _mvEnqueue(vid,url,slot,retryCount+1);
-        },delay);
-        _mvQueueDone(500);
+        if(!c.querySelector('.mv-loading')&&!c.querySelector('.mv-cell-err')){const sp=document.createElement('div');sp.className='mv-loading';c.appendChild(sp);}
+        _schedMvStart(vid,url,slot,retryCount+1,delay);
         return;
       }
-      const existing=c.querySelector('.mv-cell-err');if(existing)existing.remove();
-      const err=document.createElement('div');err.className='mv-cell-err';
-      err.innerHTML=`<i class="fa-solid fa-circle-exclamation"></i><span>Sin señal</span><button onclick="event.stopPropagation();_rebuildMvSlot(${slot})" style="background:var(--celeste);border:none;color:#000;border-radius:99px;padding:5px 14px;font-size:12px;cursor:pointer;font-family:Poppins,sans-serif;font-weight:600">Reintentar</button>`;
-      c.appendChild(err);
-      // Auto-retry cada 60s: si el canal vuelve, el overlay desaparece solo
-      _mvTimers[slot+'_auto']=setInterval(()=>{
-        const still=document.getElementById(`mv-cell-${slot}`);
-        if(!still||still.querySelector('video')!==vid){clearInterval(_mvTimers[slot+'_auto']);_mvTimers[slot+'_auto']=null;return;}
-        if(!still.querySelector('.mv-cell-err')){clearInterval(_mvTimers[slot+'_auto']);_mvTimers[slot+'_auto']=null;return;}
-        _mvEnqueue(vid,url,slot,0); // reintentar desde cero silenciosamente
-      },60000);
-      _mvQueueDone(500);
+      _showSinSenal(c,slot,vid,url);
     });
     S.mvHls[slot]=h;
-  } else if(vid.canPlayType('application/vnd.apple.mpegurl')){
+  }else if(vid.canPlayType('application/vnd.apple.mpegurl')){
     vid.src=url;
-    vid.addEventListener('loadedmetadata',()=>{vid.play().catch(()=>{});_mvQueueDone(2000);},{once:true});
+    vid.addEventListener('loadedmetadata',()=>{vid.play().catch(()=>{});},{once:true});
     vid.addEventListener('error',()=>{
       const c=document.getElementById(`mv-cell-${slot}`);
-      if(!c||c.querySelector('video')!==vid){_mvQueueDone(500);return;}
-      if(retryCount<1){
-        setTimeout(()=>{
-          const still=document.getElementById(`mv-cell-${slot}`);
-          if(!still||still.querySelector('video')!==vid)return;
-          _mvEnqueue(vid,url,slot,retryCount+1);
-        },5000);
-        _mvQueueDone(500);
-        return;
-      }
-      const err=document.createElement('div');err.className='mv-cell-err';
-      err.innerHTML=`<i class="fa-solid fa-circle-exclamation"></i><span>Sin señal</span><button onclick="event.stopPropagation();_rebuildMvSlot(${slot})" style="background:var(--celeste);border:none;color:#000;border-radius:99px;padding:5px 14px;font-size:12px;cursor:pointer;font-family:Poppins,sans-serif;font-weight:600">Reintentar</button>`;
-      c.appendChild(err);
-      _mvQueueDone(500);
+      if(!c||c.querySelector('video')!==vid)return;
+      if(retryCount<1){_schedMvStart(vid,url,slot,retryCount+1,5000);return;}
+      _showSinSenal(c,slot,vid,url);
     },{once:true});
     S.mvHls[slot]=null;
   }
@@ -1723,13 +1703,13 @@ function mvSelectAudio(slot){
 function _rebuildMvSlot(slot){
   const ch=S.mvChannels[slot];if(!ch)return;
   const cell=document.getElementById(`mv-cell-${slot}`);if(!cell)return;
-  // Limpiar timers del slot
-  if(_mvTimers[slot]){clearTimeout(_mvTimers[slot]);_mvTimers[slot]=null;}
-  if(_mvTimers[slot+'_stall']){clearInterval(_mvTimers[slot+'_stall']);_mvTimers[slot+'_stall']=null;}
-  if(_mvTimers[slot+'_auto']){clearInterval(_mvTimers[slot+'_auto']);_mvTimers[slot+'_auto']=null;}
+  // Limpiar todos los timers del slot
+  ['','_stall','_auto','_sched'].forEach(k=>{
+    const key=`${slot}${k}`;
+    if(_mvTimers[key]){k===''||k==='_sched'?clearTimeout(_mvTimers[key]):clearInterval(_mvTimers[key]);_mvTimers[key]=null;}
+  });
   if(S.mvHls[slot]){S.mvHls[slot].destroy();S.mvHls[slot]=null;}
   const url=`/.netlify/functions/hls-proxy?u=${enc(S.creds.username)}&p=${enc(S.creds.password)}&id=${ch.id}`;
-  // Reconstruir UI del cell
   const vid=document.createElement('video');
   vid.style.cssText='width:100%;height:100%;object-fit:contain;display:block;';
   vid.muted=true;vid.autoplay=true;
@@ -1746,15 +1726,18 @@ function _rebuildMvSlot(slot){
   const isAudio=(S.mvAudioSlot===slot);
   vid.muted=!isAudio;
   if(isAudio){cell.classList.add('mv-audio-active');audioBtn.innerHTML='<i class="fa-solid fa-volume-high"></i>';}
-  // Spinner inmediato
   const spinner=document.createElement('div');spinner.className='mv-loading';cell.appendChild(spinner);
-  // Saltar queue — arrancar directo (es acción manual del usuario, no carga inicial)
-  _startMvHls(vid,url,slot,0);
+  _mvStallCount[slot]=0; // Reset en rebuild manual — el usuario pidió explícitamente reintentar
+  _startMvHls(vid,url,slot,0); // Arranque inmediato (acción manual del usuario)
 }
 function setMvLayout(n){S.mvLayout=n;document.getElementById('mv-btn-2').classList.toggle('active',n===2);document.getElementById('mv-btn-4').classList.toggle('active',n===4);renderMultiview();}
 function closeMvAll(){
-  _mvQueue.length=0;_mvQueueBusy=false;
-  Object.keys(_mvTimers).forEach(k=>{if(_mvTimers[k]){clearTimeout(_mvTimers[k]);_mvTimers[k]=null;}});
+  Object.keys(_mvTimers).forEach(k=>{
+    if(_mvTimers[k]){
+      (k.includes('stall')||k.includes('auto'))?clearInterval(_mvTimers[k]):clearTimeout(_mvTimers[k]);
+      _mvTimers[k]=null;
+    }
+  });
   S.mvHls.forEach(h=>{if(h)h.destroy();});S.mvHls=[];S.mvChannels=[];S.mvAudioSlot=-1;
   const grid=document.getElementById('mv-grid');if(grid)grid.innerHTML='';
   renderMultiview();
@@ -1837,11 +1820,13 @@ function selectMvChannel(id){
   _buildMvCell(cell,slot,id,name);
 }
 function clearMvSlot(slot){
-  if(_mvTimers[slot]){clearTimeout(_mvTimers[slot]);_mvTimers[slot]=null;}
-  if(_mvTimers[slot+'_stall']){clearInterval(_mvTimers[slot+'_stall']);_mvTimers[slot+'_stall']=null;}
-  if(_mvTimers[slot+'_auto']){clearInterval(_mvTimers[slot+'_auto']);_mvTimers[slot+'_auto']=null;}
+  ['','_stall','_auto','_sched'].forEach(k=>{
+    const key=`${slot}${k}`;
+    if(_mvTimers[key]){k===''||k==='_sched'?clearTimeout(_mvTimers[key]):clearInterval(_mvTimers[key]);_mvTimers[key]=null;}
+  });
   if(S.mvHls[slot]){S.mvHls[slot].destroy();S.mvHls[slot]=null;}
   S.mvChannels[slot]=null;
+  _mvStallCount[slot]=0;
   if(S.mvAudioSlot===slot)S.mvAudioSlot=-1;
   const cell=document.getElementById(`mv-cell-${slot}`);
   if(cell){cell.className='mv-cell';cell.onclick=null;cell.innerHTML=`<div class="mv-cell-overlay"><span class="mv-empty-icon"><i class="fa-solid fa-tv"></i></span><button class="mv-add-btn" onclick="openMvPicker(${slot})"><i class="fa-solid fa-plus"></i> Agregar canal</button></div>`;}
