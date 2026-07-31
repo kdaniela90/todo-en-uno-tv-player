@@ -1005,7 +1005,7 @@ async function fetchEpgBatch(streams){
     await new Promise(r=>setTimeout(r,120));
   }
 }
-function playLive(id){const s=_liveStore[id]||{};const name=s.name||'',icon=s.stream_icon||'';S.currentPlayer={type:'live',id,name,icon};openPlayer(name);loadHls(document.getElementById('player-video'),`/.netlify/functions/hls-proxy?u=${enc(S.creds.username)}&p=${enc(S.creds.password)}&id=${id}`);updateFavBtn();}
+function playLive(id){const s=_liveStore[id]||{};const name=s.name||'',icon=s.stream_icon||'';S.currentPlayer={type:'live',id,name,icon};openPlayer(name);loadHls(document.getElementById('player-video'),`/api/hls-live?u=${enc(S.creds.username)}&p=${enc(S.creds.password)}&id=${id}`);updateFavBtn();}
 async function openLiveDetail(id){
   const s=_liveStore[id]||{};
   const name=s.name||'',icon=s.stream_icon||'';
@@ -1337,9 +1337,19 @@ function loadVod(videoEl,url,resumePos){
   if(_hls){_hls.destroy();_hls=null;}
   if(_progressTimer){clearInterval(_progressTimer);_progressTimer=null;}
   _stopStallWatchdog();
-  _doLoadVod(videoEl,url,resumePos,myToken,0);
+  // Extraer parámetros de la URL que viene de vod-resolve (u, p, id, ext, type)
+  const params=new URLSearchParams(url.split('?')[1]||'');
+  const _u=params.get('u'),_p=params.get('p'),_id=params.get('id');
+  const _ext=params.get('ext')||'mp4';
+  const _type=params.get('type')||'movie';
+  // URL HLS vía Edge Function — sin Mixed Content, sin IPs Lambda bloqueadas
+  const hlsUrl=`/api/hls-live?u=${enc(_u)}&p=${enc(_p)}&id=${enc(_id)}&type=${_type}`;
+  // URL CDN directa — fallback si IPTV no sirve M3U8 para este título
+  const _prefix=_type==='series'?'xtream-series':'xtream-vod';
+  const cdnDirect=`/${_prefix}/${_u}/${_p}/${_id}.${_ext}`;
+  _doLoadVod(videoEl,hlsUrl,cdnDirect,resumePos,myToken,0);
 }
-function _doLoadVod(videoEl,url,resumePos,myToken,retryCount){
+function _doLoadVod(videoEl,hlsUrl,cdnUrl,resumePos,myToken,retryCount){
   if(myToken!==_vodToken)return;
   const loading=document.getElementById('player-loading');
   const errEl=document.getElementById('player-error-msg');
@@ -1347,6 +1357,54 @@ function _doLoadVod(videoEl,url,resumePos,myToken,retryCount){
   if(loading)loading.querySelector('.player-spinner').style.display='block';
   if(errEl)errEl.style.display='none';
   videoEl.pause();
+
+  function _startProgressTimer(){
+    if(_progressTimer){clearInterval(_progressTimer);_progressTimer=null;}
+    _progressTimer=setInterval(()=>{
+      if(myToken!==_vodToken){clearInterval(_progressTimer);_progressTimer=null;return;}
+      const dur=videoEl.duration,pos=videoEl.currentTime;
+      if(!dur||dur<30||!S.currentPlayer)return;
+      if(pos/dur>0.92){_clearProgress(S.currentPlayer.type,S.currentPlayer.id);return;}
+      _saveProgress(S.currentPlayer.type,S.currentPlayer.id,pos,dur);
+    },15000);
+  }
+
+  // ── Intento 1: HLS.js vía Edge Function (sin Mixed Content) ──────────────
+  if(retryCount===0&&Hls.isSupported()){
+    if(_hls){_hls.destroy();_hls=null;}
+    _hls=new Hls({
+      enableWorker:true,
+      maxBufferLength:30,
+      maxMaxBufferLength:60,
+      fragLoadingTimeOut:12000,
+      manifestLoadingTimeOut:12000,
+      levelLoadingTimeOut:12000,
+      fragLoadingMaxRetry:2,
+    });
+    _hls.loadSource(hlsUrl);
+    _hls.attachMedia(videoEl);
+    _hls.on(Hls.Events.MANIFEST_PARSED,()=>{
+      if(myToken!==_vodToken){_hls.destroy();_hls=null;return;}
+      if(loading)loading.style.display='none';
+      if(resumePos&&resumePos>0)videoEl.currentTime=resumePos;
+      videoEl.play().catch(()=>{});
+      _startProgressTimer();
+    });
+    _hls.on(Hls.Events.ERROR,(_,d)=>{
+      if(myToken!==_vodToken)return;
+      if(d.fatal){
+        _hls.destroy();_hls=null;
+        // HLS.js falló → fallback a video nativo con CDN proxy
+        _doLoadVod(videoEl,hlsUrl,cdnUrl,resumePos,myToken,1);
+      }else if(d.type===Hls.ErrorTypes.MEDIA_ERROR){
+        try{_hls.recoverMediaError();}catch(e){}
+      }
+    });
+    return;
+  }
+
+  // ── Intento 2 / Fallback: video nativo con CDN proxy ─────────────────────
+  // Aplica si HLS.js no está soportado (Safari nativo) o si HLS.js falló (retryCount>0)
   function _applySrc(srcUrl){
     if(myToken!==_vodToken)return;
     let _hasLoaded=false;
@@ -1356,47 +1414,22 @@ function _doLoadVod(videoEl,url,resumePos,myToken,retryCount){
       if(loading)loading.style.display='none';
       if(resumePos&&resumePos>0)videoEl.currentTime=resumePos;
       videoEl.play().catch(()=>{});
-      _progressTimer=setInterval(()=>{
-        if(myToken!==_vodToken){clearInterval(_progressTimer);_progressTimer=null;return;}
-        const dur=videoEl.duration,pos=videoEl.currentTime;
-        if(!dur||dur<30||!S.currentPlayer)return;
-        if(pos/dur>0.92){_clearProgress(S.currentPlayer.type,S.currentPlayer.id);return;}
-        _saveProgress(S.currentPlayer.type,S.currentPlayer.id,pos,dur);
-      },15000);
+      _startProgressTimer();
     },{once:true});
     videoEl.addEventListener('error',()=>{
       if(myToken!==_vodToken)return;
       if(_hasLoaded)return;
-      // En el retry usamos la URL original (vod-resolve) para que vuelva a intentar todo el flujo
-      if(retryCount<1){setTimeout(()=>_doLoadVod(videoEl,url,resumePos,myToken,1),5000);return;}
       showPlayerError('No se pudo cargar el video. El servidor puede estar ocupado.');
     },{once:true});
     videoEl.src=srcUrl;
   }
-  // Construir URL CDN directa desde los params (funciona sin vod-resolve)
-  const params=new URLSearchParams(url.split('?')[1]||'');
-  const _u=params.get('u'),_p=params.get('p'),_id=params.get('id');
-  const _ext=params.get('ext')||'mp4',_type=params.get('type')||'movie';
-  const _prefix=_type==='series'?'xtream-series':'xtream-vod';
-  const cdnDirect=`/${_prefix}/${_u}/${_p}/${_id}.${_ext}`;
 
-  if(retryCount===0){
-    // Intentar capturar URL estable vía vod-resolve (mejor para seeking)
-    // Timeout de 4s: si falla o tarda, cae directo al CDN proxy
-    const abortCtrl=new AbortController();
-    const tId=setTimeout(()=>abortCtrl.abort(),4000);
-    fetch(url,{redirect:'follow',signal:abortCtrl.signal})
-      .then(r=>{
-        clearTimeout(tId);
-        r.body?.cancel(); // No descargar el cuerpo del video
-        const finalUrl=r.url||'';
-        // Usar URL resuelta solo si terminó en nuestros paths CDN proxy
-        _applySrc(finalUrl.includes('/xtream-')&&finalUrl.startsWith('https://')?finalUrl:cdnDirect);
-      })
-      .catch(()=>{clearTimeout(tId);_applySrc(cdnDirect);});
+  if(videoEl.canPlayType('application/vnd.apple.mpegurl')){
+    // Safari — HLS nativo: usar hlsUrl directamente
+    _applySrc(hlsUrl);
   }else{
-    // Retry o direct: CDN proxy sin vod-resolve
-    _applySrc(cdnDirect);
+    // Fallback final: URL CDN proxy con extensión original (mp4/mkv)
+    _applySrc(cdnUrl);
   }
 }
 function toggleFullscreen(){
@@ -1551,7 +1584,7 @@ function _showSinSenal(c,slot,vid,url){
   },60000);
 }
 function _buildMvCell(cell,slot,id,name){
-  const url=`/.netlify/functions/hls-proxy?u=${enc(S.creds.username)}&p=${enc(S.creds.password)}&id=${id}`;
+  const url=`/api/hls-live?u=${enc(S.creds.username)}&p=${enc(S.creds.password)}&id=${id}`;
   // Cancelar todos los timers pendientes del slot
   ['','_stall','_auto','_sched'].forEach(k=>{
     const key=`${slot}${k}`;
@@ -1589,15 +1622,16 @@ function _startMvHls(vid,url,slot,retryCount){
     const h=new Hls({
       enableWorker:false,
       lowLatencyMode:false,
-      maxBufferLength:4,
-      maxMaxBufferLength:8,
+      maxBufferLength:6,       // 6s buffer → menos spinners por micro-cortes
+      maxMaxBufferLength:12,
       startLevel:-1,
       liveSyncDurationCount:2,
-      // Timeouts cortos: HLS.js falla rápido y nos cede el control antes de 22s de hard timeout
-      fragLoadingTimeOut:5000,
-      manifestLoadingTimeOut:8000,
-      levelLoadingTimeOut:8000,
-      fragLoadingMaxRetry:1,
+      // Con Edge Function el manifest llega en ~400ms (antes ~8s con Lambda)
+      // Timeouts más generosos = menos falsos positivos, más estabilidad
+      fragLoadingTimeOut:7000,
+      manifestLoadingTimeOut:10000,
+      levelLoadingTimeOut:10000,
+      fragLoadingMaxRetry:1,   // 1 reintento interno; luego nuestro backoff toma el control
       manifestLoadingMaxRetry:1,
       levelLoadingMaxRetry:1,
       loader:_makeHlsLoader(),
@@ -1608,8 +1642,8 @@ function _startMvHls(vid,url,slot,retryCount){
     vid.addEventListener('waiting',_showSp);
     vid.addEventListener('playing',_hideSp);
 
-    // Hard timeout: si en 22s no llega MANIFEST_PARSED ni error fatal → forzar reintento
-    // Cubre casos raros donde el proxy no responde nada (ni OK ni error)
+    // Hard timeout: si en 25s no llega MANIFEST_PARSED ni error fatal → forzar reintento
+    // Cubre casos donde el proxy no responde ni con éxito ni con error (colgado)
     let _gotEvent=false;
     const _hardTimer=setTimeout(()=>{
       if(_gotEvent||S.mvHls[slot]!==h)return;
@@ -1622,7 +1656,7 @@ function _startMvHls(vid,url,slot,retryCount){
         if(!c.querySelector('.mv-loading')&&!c.querySelector('.mv-cell-err')){const sp=document.createElement('div');sp.className='mv-loading';c.appendChild(sp);}
         _schedMvStart(vid,url,slot,retryCount+1,delays[retryCount]||8000);
       }else{_showSinSenal(c,slot,vid,url);}
-    },22000);
+    },25000);
 
     h.loadSource(url);h.attachMedia(vid);
     h.on(Hls.Events.MANIFEST_PARSED,()=>{
@@ -1709,7 +1743,7 @@ function _rebuildMvSlot(slot){
     if(_mvTimers[key]){k===''||k==='_sched'?clearTimeout(_mvTimers[key]):clearInterval(_mvTimers[key]);_mvTimers[key]=null;}
   });
   if(S.mvHls[slot]){S.mvHls[slot].destroy();S.mvHls[slot]=null;}
-  const url=`/.netlify/functions/hls-proxy?u=${enc(S.creds.username)}&p=${enc(S.creds.password)}&id=${ch.id}`;
+  const url=`/api/hls-live?u=${enc(S.creds.username)}&p=${enc(S.creds.password)}&id=${ch.id}`;
   const vid=document.createElement('video');
   vid.style.cssText='width:100%;height:100%;object-fit:contain;display:block;';
   vid.muted=true;vid.autoplay=true;
