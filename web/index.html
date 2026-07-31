@@ -341,6 +341,9 @@ html, body { width: 100%; height: 100%; background: var(--bg); color: var(--text
 .mv-cell:hover .mv-audio-btn { display:flex; }
 .mv-cell.mv-audio-active .mv-audio-btn { display:flex; background:var(--celeste); color:#000; }
 .mv-cell-err { position:absolute; inset:0; display:flex; flex-direction:column; align-items:center; justify-content:center; gap:8px; color:#FF9B9B; font-size:12px; background:rgba(0,0,0,.5); }
+.mv-loading { position:absolute; inset:0; display:flex; align-items:center; justify-content:center; pointer-events:none; z-index:3; }
+.mv-loading::after { content:''; width:28px; height:28px; border:3px solid rgba(255,255,255,.2); border-top-color:rgba(255,255,255,.8); border-radius:50%; animation:mv-spin .7s linear infinite; }
+@keyframes mv-spin { to { transform:rotate(360deg); } }
 
 /* ── SEC HEADER ── */
 .sec-header { display:flex; align-items:center; justify-content:space-between; margin-bottom:16px; }
@@ -1584,6 +1587,8 @@ function _buildMvCell(cell,slot,id,name){
 
   // Limpiar stall watchdog anterior si lo hubiera
   if(_mvTimers[slot+'_stall']){clearInterval(_mvTimers[slot+'_stall']);_mvTimers[slot+'_stall']=null;}
+  // Spinner de carga inmediato — el usuario ve feedback desde el primer momento
+  const spinner=document.createElement('div');spinner.className='mv-loading';cell.appendChild(spinner);
   // Add to sequential queue — starts only when previous stream has confirmed loading
   _mvEnqueue(vid,url,slot,0);
 }
@@ -1592,9 +1597,10 @@ function _startMvHls(vid,url,slot,retryCount){
     const h=new Hls({
       enableWorker:false,
       lowLatencyMode:false,
-      maxBufferLength:8,
-      maxMaxBufferLength:16,
+      maxBufferLength:4,        // 4s en lugar de 8s — arranca antes
+      maxMaxBufferLength:8,
       startLevel:-1,
+      liveSyncDurationCount:2,  // sincroniza en vivo más rápido
       fragLoadingTimeOut:10000,
       manifestLoadingTimeOut:15000,
       levelLoadingTimeOut:15000,
@@ -1607,6 +1613,8 @@ function _startMvHls(vid,url,slot,retryCount){
     h.loadSource(url);h.attachMedia(vid);
     h.on(Hls.Events.MANIFEST_PARSED,()=>{
       vid.play().catch(()=>{});
+      // Quitar spinner de carga — el stream ya respondió
+      const sp=document.getElementById(`mv-cell-${slot}`)?.querySelector('.mv-loading');if(sp)sp.remove();
       // Stall watchdog: si currentTime no avanza durante 20s → reconstruir sin mostrar error
       let _lastCt=-1,_stuckTicks=0;
       _mvTimers[slot+'_stall']=setInterval(()=>{
@@ -1622,8 +1630,8 @@ function _startMvHls(vid,url,slot,retryCount){
           }
         }else{_lastCt=ct;_stuckTicks=0;}
       },5000);
-      // Stream confirmed — allow next stream to start after 2s gap
-      _mvQueueDone(2000);
+      // Stream confirmado — liberar queue al siguiente slot con 800ms de gap (antes 2s)
+      _mvQueueDone(800);
     });
     h.on(Hls.Events.ERROR,(_,d)=>{
       if(!d.fatal){return;} // Non-fatal: HLS.js maneja reintentos internamente; no interrumpir
@@ -1635,10 +1643,10 @@ function _startMvHls(vid,url,slot,retryCount){
       h.destroy();if(S.mvHls[slot]===h)S.mvHls[slot]=null;
       const c=document.getElementById(`mv-cell-${slot}`);
       if(!c||c.querySelector('video')!==vid){_mvQueueDone(500);return;}
-      // Backoff exponencial: 1s → 5s → 15s → mostrar error (3 reintentos silenciosos)
-      const delays=[1000,5000,15000];
-      if(retryCount<3){
-        const delay=delays[retryCount]||15000;
+      // Backoff exponencial: 1s → 5s → 15s → 30s → 30s → mostrar error (5 reintentos silenciosos)
+      const delays=[1000,5000,15000,30000,30000];
+      if(retryCount<5){
+        const delay=delays[retryCount]||30000;
         _mvTimers[slot]=setTimeout(()=>{
           _mvTimers[slot]=null;
           const still=document.getElementById(`mv-cell-${slot}`);
@@ -1652,6 +1660,13 @@ function _startMvHls(vid,url,slot,retryCount){
       const err=document.createElement('div');err.className='mv-cell-err';
       err.innerHTML=`<i class="fa-solid fa-circle-exclamation"></i><span>Sin señal</span><button onclick="event.stopPropagation();_rebuildMvSlot(${slot})" style="background:var(--celeste);border:none;color:#000;border-radius:99px;padding:5px 14px;font-size:12px;cursor:pointer;font-family:Poppins,sans-serif;font-weight:600">Reintentar</button>`;
       c.appendChild(err);
+      // Auto-retry cada 60s: si el canal vuelve, el overlay desaparece solo
+      _mvTimers[slot+'_auto']=setInterval(()=>{
+        const still=document.getElementById(`mv-cell-${slot}`);
+        if(!still||still.querySelector('video')!==vid){clearInterval(_mvTimers[slot+'_auto']);_mvTimers[slot+'_auto']=null;return;}
+        if(!still.querySelector('.mv-cell-err')){clearInterval(_mvTimers[slot+'_auto']);_mvTimers[slot+'_auto']=null;return;}
+        _mvEnqueue(vid,url,slot,0); // reintentar desde cero silenciosamente
+      },60000);
       _mvQueueDone(500);
     });
     S.mvHls[slot]=h;
@@ -1690,7 +1705,37 @@ function mvSelectAudio(slot){
     if(btn)btn.innerHTML=active?'<i class="fa-solid fa-volume-high"></i>':'<i class="fa-solid fa-volume-xmark"></i>';
   }
 }
-function _rebuildMvSlot(slot){const ch=S.mvChannels[slot];if(!ch)return;const cell=document.getElementById(`mv-cell-${slot}`);if(cell)_buildMvCell(cell,slot,ch.id,ch.name);}
+function _rebuildMvSlot(slot){
+  const ch=S.mvChannels[slot];if(!ch)return;
+  const cell=document.getElementById(`mv-cell-${slot}`);if(!cell)return;
+  // Limpiar timers del slot
+  if(_mvTimers[slot]){clearTimeout(_mvTimers[slot]);_mvTimers[slot]=null;}
+  if(_mvTimers[slot+'_stall']){clearInterval(_mvTimers[slot+'_stall']);_mvTimers[slot+'_stall']=null;}
+  if(_mvTimers[slot+'_auto']){clearInterval(_mvTimers[slot+'_auto']);_mvTimers[slot+'_auto']=null;}
+  if(S.mvHls[slot]){S.mvHls[slot].destroy();S.mvHls[slot]=null;}
+  const url=`/.netlify/functions/hls-proxy?u=${enc(S.creds.username)}&p=${enc(S.creds.password)}&id=${ch.id}`;
+  // Reconstruir UI del cell
+  const vid=document.createElement('video');
+  vid.style.cssText='width:100%;height:100%;object-fit:contain;display:block;';
+  vid.muted=true;vid.autoplay=true;
+  vid.setAttribute('playsinline','');vid.setAttribute('webkit-playsinline','');
+  cell.innerHTML='';cell.appendChild(vid);
+  const audioBtn=document.createElement('button');audioBtn.className='mv-audio-btn';
+  audioBtn.innerHTML='<i class="fa-solid fa-volume-xmark"></i>';audioBtn.title='Activar audio';
+  audioBtn.onclick=(e)=>{e.stopPropagation();mvSelectAudio(slot);};cell.appendChild(audioBtn);
+  const closeBtn=document.createElement('button');closeBtn.className='mv-cell-close';
+  closeBtn.innerHTML='<i class="fa-solid fa-xmark"></i>';
+  closeBtn.onclick=(e)=>{e.stopPropagation();clearMvSlot(slot);};cell.appendChild(closeBtn);
+  const label=document.createElement('div');label.className='mv-cell-label';label.textContent=ch.name;cell.appendChild(label);
+  cell.onclick=()=>mvSelectAudio(slot);
+  const isAudio=(S.mvAudioSlot===slot);
+  vid.muted=!isAudio;
+  if(isAudio){cell.classList.add('mv-audio-active');audioBtn.innerHTML='<i class="fa-solid fa-volume-high"></i>';}
+  // Spinner inmediato
+  const spinner=document.createElement('div');spinner.className='mv-loading';cell.appendChild(spinner);
+  // Saltar queue — arrancar directo (es acción manual del usuario, no carga inicial)
+  _startMvHls(vid,url,slot,0);
+}
 function setMvLayout(n){S.mvLayout=n;document.getElementById('mv-btn-2').classList.toggle('active',n===2);document.getElementById('mv-btn-4').classList.toggle('active',n===4);renderMultiview();}
 function closeMvAll(){
   _mvQueue.length=0;_mvQueueBusy=false;
@@ -1779,6 +1824,7 @@ function selectMvChannel(id){
 function clearMvSlot(slot){
   if(_mvTimers[slot]){clearTimeout(_mvTimers[slot]);_mvTimers[slot]=null;}
   if(_mvTimers[slot+'_stall']){clearInterval(_mvTimers[slot+'_stall']);_mvTimers[slot+'_stall']=null;}
+  if(_mvTimers[slot+'_auto']){clearInterval(_mvTimers[slot+'_auto']);_mvTimers[slot+'_auto']=null;}
   if(S.mvHls[slot]){S.mvHls[slot].destroy();S.mvHls[slot]=null;}
   S.mvChannels[slot]=null;
   if(S.mvAudioSlot===slot)S.mvAudioSlot=-1;
