@@ -712,8 +712,7 @@ html, body { width: 100%; height: 100%; background: var(--bg); color: var(--text
   <div id="view-multiview" style="display:none;flex:1;flex-direction:column;overflow:hidden;min-height:0">
     <div class="multiview-toolbar">
       <span style="font-size:15px;font-weight:600;flex:1">Multiview</span>
-      <button class="mv-layout-btn active" id="mv-btn-2" onclick="setMvLayout(2)">2 Pantallas</button>
-      <button class="mv-layout-btn" id="mv-btn-4" onclick="setMvLayout(4)">4 Pantallas</button>
+      <button class="mv-layout-btn active" id="mv-btn-2">2 Pantallas</button>
       <button class="mv-layout-btn" id="mv-fs-btn" onclick="toggleMvFullscreen()" title="Pantalla completa"><i class="fa-solid fa-expand"></i></button>
       <button class="mv-layout-btn" style="margin-left:4px" onclick="closeMvAll()"><i class="fa-solid fa-xmark"></i> Limpiar</button>
     </div>
@@ -940,7 +939,7 @@ function showSection(sec){
   const mv=document.getElementById('view-multiview'),content=document.getElementById('main-content');
   const appEl=document.getElementById('screen-app');
   if(sec==='multiview'){content.style.display='none';mv.style.display='flex';appEl.classList.add('mv-active');}
-  else{content.style.display='';mv.style.display='none';appEl.classList.remove('mv-active');ALL_VIEWS.forEach(v=>{const el=document.getElementById('view-'+v);if(el)el.style.display=v===sec?'':'none';});}
+  else{_suspendMvHls();content.style.display='';mv.style.display='none';appEl.classList.remove('mv-active');ALL_VIEWS.forEach(v=>{const el=document.getElementById('view-'+v);if(el)el.style.display=v===sec?'':'none';});}
 
   if(sec==='live')renderLive();
   if(sec==='movies')renderMovies();
@@ -1212,7 +1211,7 @@ function _getProgress(type,id){try{const all=JSON.parse(localStorage.getItem('te
 function _clearProgress(type,id){try{const all=JSON.parse(localStorage.getItem('teutv_progress')||'{}');delete all[type+'_'+id];localStorage.setItem('teutv_progress',JSON.stringify(all));}catch{}}
 function _fmtTime(s){const m=Math.floor(s/60),sec=Math.floor(s%60);return m+':'+(sec<10?'0':'')+sec;}
 
-function openPlayer(title){document.getElementById('screen-app').classList.remove('active');document.getElementById('screen-player').classList.add('active');document.getElementById('player-title').textContent=title;document.getElementById('player-loading').style.display='flex';}
+function openPlayer(title){_suspendMvHls();document.getElementById('screen-app').classList.remove('active');document.getElementById('screen-player').classList.add('active');document.getElementById('player-title').textContent=title;document.getElementById('player-loading').style.display='flex';}
 function _stopStallWatchdog(){if(_stallWatchdog){clearInterval(_stallWatchdog);_stallWatchdog=null;}}
 function _startStallWatchdog(videoEl,url,myToken){
   _stopStallWatchdog();
@@ -1315,7 +1314,16 @@ function _doLoadHls(videoEl,url,myToken,retryCount){
       console.warn('[TEUTV HLS]',d.type,d.details,d.fatal?'FATAL':'',d.url||'',(d.response&&d.response.code)||'');
       if(d.fatal){
         _stopStallWatchdog();_hls.destroy();_hls=null;
-        if(retryCount<1){setTimeout(()=>_doLoadHls(videoEl,url,myToken,1),5000);return;}
+        const httpCode=d.response&&d.response.code;
+        if(httpCode===403||httpCode===401){
+          // 403 = IPTV rechazó la conexión (límite alcanzado o cuenta suspendida)
+          // NO reintentar: cada reintento crea una conexión fantasma en IPTV
+          showPlayerError('Límite de conexiones alcanzado. Espera un momento y vuelve a intentarlo.');
+          return;
+        }
+        // Para errores de red reales: esperar 30s antes de reintentar
+        // (da tiempo a IPTV para cerrar la conexión anterior)
+        if(retryCount<1){setTimeout(()=>_doLoadHls(videoEl,url,myToken,1),30000);return;}
         showPlayerError('Error al cargar la señal. Verifica tu conexión o intenta con otro canal.');
       }else if(d.type===Hls.ErrorTypes.MEDIA_ERROR){
         try{_hls.recoverMediaError();}catch(e){}
@@ -1439,9 +1447,20 @@ function _doLoadVod(videoEl,nativeUrl,hlsUrl,resumePos,myToken){
       if(myToken!==_vodToken)return;
       if(d.fatal){
         if(!_won){
-          // HLS.js aún no había ganado — no cancela Path A, Path A puede seguir
+          // HLS.js aún no había ganado
           if(_hls){_hls.destroy();_hls=null;}
           _bFailed=true;
+          const httpCode=d.response&&d.response.code;
+          if(httpCode===403||httpCode===401){
+            // Límite de conexiones IPTV — cancelar también Path A y mostrar mensaje claro
+            videoEl.removeEventListener('loadedmetadata',_onMeta);
+            videoEl.removeEventListener('error',_onErr);
+            videoEl.pause();videoEl.src='';
+            _aFailed=true;
+            if(loading)loading.style.display='none';
+            showPlayerError('Límite de conexiones alcanzado. Cierra otros streams activos y vuelve a intentarlo.');
+            return;
+          }
           _checkFail();
         }else{
           // HLS.js estaba reproduciendo y tuvo un error fatal post-victoria
@@ -1744,6 +1763,12 @@ function _startMvHls(vid,url,slot,retryCount){
       h.destroy();if(S.mvHls[slot]===h)S.mvHls[slot]=null;
       const c=document.getElementById(`mv-cell-${slot}`);
       if(!c||c.querySelector('video')!==vid)return;
+      const httpCode=d.response&&d.response.code;
+      if(httpCode===403||httpCode===401){
+        // 403 = límite de conexiones alcanzado — NO reintentar, cada reintento crea más conexiones fantasma
+        _showSinSenal(c,slot,vid,url);
+        return;
+      }
       const delays=[1000,3000,8000];
       if(retryCount<3){
         const delay=delays[retryCount]||8000;
@@ -1808,16 +1833,29 @@ function _rebuildMvSlot(slot){
   _mvStallCount[slot]=0; // Reset en rebuild manual — el usuario pidió explícitamente reintentar
   _startMvHls(vid,url,slot,0); // Arranque inmediato (acción manual del usuario)
 }
-function setMvLayout(n){S.mvLayout=n;document.getElementById('mv-btn-2').classList.toggle('active',n===2);document.getElementById('mv-btn-4').classList.toggle('active',n===4);renderMultiview();}
-function closeMvAll(){
+function setMvLayout(n){S.mvLayout=2;renderMultiview();}// siempre 2 pantallas max
+function _suspendMvHls(){
+  // Destruye los streams HLS activos y libera conexiones IPTV,
+  // pero conserva S.mvChannels[] para que renderMultiview() los retome al volver.
   Object.keys(_mvTimers).forEach(k=>{
     if(_mvTimers[k]){
       (k.includes('stall')||k.includes('auto'))?clearInterval(_mvTimers[k]):clearTimeout(_mvTimers[k]);
       _mvTimers[k]=null;
     }
   });
-  S.mvHls.forEach(h=>{if(h)h.destroy();});S.mvHls=[];S.mvChannels=[];S.mvAudioSlot=-1;
-  const grid=document.getElementById('mv-grid');if(grid)grid.innerHTML='';
+  const grid=document.getElementById('mv-grid');
+  if(grid){
+    // pause + src='' libera la conexión IPTV inmediatamente (el video element cierra la TCP)
+    grid.querySelectorAll('video').forEach(v=>{v.pause();v.src='';});
+    grid.innerHTML=''; // quita elementos del DOM
+  }
+  S.mvHls.forEach(h=>{if(h)h.destroy();});
+  S.mvHls=S.mvChannels.map(()=>null); // resetea refs HLS, conserva lista de canales
+  S.mvAudioSlot=-1;
+}
+function closeMvAll(){
+  _suspendMvHls();
+  S.mvChannels=[];
   renderMultiview();
 }
 function toggleMvFullscreen(){
@@ -1902,11 +1940,13 @@ function clearMvSlot(slot){
     const key=`${slot}${k}`;
     if(_mvTimers[key]){k===''||k==='_sched'?clearTimeout(_mvTimers[key]):clearInterval(_mvTimers[key]);_mvTimers[key]=null;}
   });
+  // Pausar y limpiar el video ANTES de destruir HLS.js — libera la conexión IPTV inmediatamente
+  const cell=document.getElementById(`mv-cell-${slot}`);
+  if(cell){const vid=cell.querySelector('video');if(vid){vid.pause();vid.src='';}}
   if(S.mvHls[slot]){S.mvHls[slot].destroy();S.mvHls[slot]=null;}
   S.mvChannels[slot]=null;
   _mvStallCount[slot]=0;
   if(S.mvAudioSlot===slot)S.mvAudioSlot=-1;
-  const cell=document.getElementById(`mv-cell-${slot}`);
   if(cell){cell.className='mv-cell';cell.onclick=null;cell.innerHTML=`<div class="mv-cell-overlay"><span class="mv-empty-icon"><i class="fa-solid fa-tv"></i></span><button class="mv-add-btn" onclick="openMvPicker(${slot})"><i class="fa-solid fa-plus"></i> Agregar canal</button></div>`;}
 }
 function closeMvPickerOverlay(e){if(e.target===document.getElementById('mv-picker'))closeMvPicker();}
