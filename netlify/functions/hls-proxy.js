@@ -1,33 +1,24 @@
 /**
- * hls-proxy.js — Netlify Function v6
+ * hls-proxy.js — Netlify Function v7
  *
  * Obtiene el M3U8 de un canal en vivo y reescribe las URLs de segmentos
  * para que pasen por los proxies CDN del mismo origen.
  *
- * Cambios vs versiones anteriores:
- *   - v4: Intento 1 (Lambda→IPTV direct) + Intento 2 (CDN self-loop)
- *         Problema: Intento 1 siempre falla (IPs Lambda bloqueadas) y
- *         agrega 5s de latencia antes del CDN self-loop.
- *   - v5/v6: Elimina Intento 1. Usa CDN self-loop siempre.
- *         Fase 1 (GET+redirect:manual) solo para capturar finalBase
- *         y mejorar la reescritura de segmentos (4s timeout rápido).
- *         Agrega 216.106.177.68 → /xtream-stream-hls en rewriteSegments.
+ * v7 vs v6:
+ *   - Phase 1 y Phase 2 corren en PARALELO (no secuencial).
+ *   - Elimina la latencia de 4s cuando Phase 1 falla (IPs Lambda bloqueadas).
+ *   - Phase 1 timeout reducido a 1.5s (si no responde en 1.5s, IPs bloqueadas — esperar 4s era inútil).
+ *   - Phase 2 CDN self-loop sigue siendo 8s.
+ *   - Resultado total: response en ~500ms-2s en lugar de 4-12s.
  *
  * Estrategia:
- *   Fase 1 — GET+redirect:manual a IPTV (4s timeout, sin descargar body)
- *     → Captura Location del 302 → guarda como finalBase para segmentos
- *     → Si falla, finalBase queda apuntando a IPTV (funciona igual)
+ *   Phase 1 — GET+redirect:manual a IPTV (1.5s timeout, en paralelo con Phase 2)
+ *     → Captura Location del 302 → guarda como finalBase para resolver segmentos relativos.
  *
- *   Fase 2 — CDN self-loop SIEMPRE (8s timeout)
- *     → ${siteBase}/xtream-live/u/p/id.m3u8 → CDN → IPTV → media server
- *     → CDN edge usa IPs no bloqueadas → obtiene M3U8 real
+ *   Phase 2 — CDN self-loop SIEMPRE (8s timeout, inicia al mismo tiempo que Phase 1)
+ *     → CDN edge (IPs no bloqueadas) → IPTV → media server → M3U8 real.
  *
- * Rutas CDN para segmentos (netlify.toml):
- *   216.106.177.68        → /xtream-stream-hls/
- *   23.237.74.2           → /xtream-live-relay/
- *   23.237.104.74:8080    → /xtream-media/
- *   23.158.40.201         → /xtream-vod-media/
- *   cualquier otro host   → /xtream-chunks/ (→ allinonestream.xyz:8080)
+ *   rewriteSegments usa finalBase (de Phase 1 si llegó; fallback a IPTV si no).
  */
 exports.handler = async (event) => {
   const { u, p, id } = event.queryStringParameters || {};
@@ -73,49 +64,58 @@ exports.handler = async (event) => {
       } catch (e) { /* timeout */ }
 
     } else {
-      // ── PRODUCCIÓN ────────────────────────────────────────────────────────
+      // ── PRODUCCIÓN: Phase 1 + Phase 2 en PARALELO ────────────────────────
 
-      // Fase 1: GET+redirect:manual — capturar Location para finalBase.
-      // Solo nos interesa el header Location (no el body del video).
-      // IPTV devuelve 302 inmediatamente, sin descargar contenido.
-      try {
-        const resp1 = await fetchWithTimeout(
-          `${IPTV}/live/${u}/${p}/${id}.m3u8`,
-          { method: 'GET', redirect: 'manual', headers: fetchHeaders },
-          4000,
-        );
-        const location = resp1.headers.get('location');
-        if (location) {
-          finalBase = location.substring(0, location.lastIndexOf('/') + 1);
-        }
-      } catch (e) { /* timeout o red → finalBase queda apuntando a IPTV (OK) */ }
+      const phase1Promise = fetchWithTimeout(
+        `${IPTV}/live/${u}/${p}/${id}.m3u8`,
+        { method: 'GET', redirect: 'manual', headers: fetchHeaders },
+        1500,  // 1.5s — si las IPs Lambda están bloqueadas, saberlo rápido
+      ).then(r => {
+        const loc = r.headers.get('location');
+        return loc ? loc.substring(0, loc.lastIndexOf('/') + 1) : null;
+      }).catch(() => null);  // timeout o error → null
 
-      // Fase 2: CDN self-loop SIEMPRE — el CDN edge (IPs no bloqueadas)
-      // contacta IPTV y sigue el redirect al media server real.
+      const phase2Promise = fetchWithTimeout(
+        `${siteBase}/xtream-live/${u}/${p}/${id}.m3u8`,
+        { redirect: 'follow', headers: fetchHeaders },
+        8000,
+      );
+
+      // Esperar a que Phase 2 termine (es la fuente del M3U8)
+      // Phase 1 puede completarse antes o después — tomamos lo que llegue
+      let resp2;
       try {
-        const resp2 = await fetchWithTimeout(
-          `${siteBase}/xtream-live/${u}/${p}/${id}.m3u8`,
-          { redirect: 'follow', headers: fetchHeaders },
-          8000,
-        );
-        if (resp2.ok) {
-          const text = await resp2.text();
-          if (text && text.includes('#EXTM3U')) {
-            m3u8 = text;
-            // Si Fase 1 no dio finalBase, intentar obtenerla de resp2.url
-            if (!finalBase || finalBase === `${IPTV}/live/${u}/${p}/`) {
-              const respUrl   = resp2.url || '';
-              const ourDomain = siteBase.replace('https://', '').replace('http://', '');
-              if (respUrl && !respUrl.includes(ourDomain) && respUrl.startsWith('http')) {
-                finalBase = respUrl.substring(0, respUrl.lastIndexOf('/') + 1);
-              }
-            }
-          }
-        } else {
-          return { statusCode: resp2.status, body: `Stream unavailable (${resp2.status})` };
-        }
+        resp2 = await phase2Promise;
       } catch (e) {
         return { statusCode: 504, body: 'Stream timeout' };
+      }
+
+      if (!resp2.ok) {
+        return { statusCode: resp2.status, body: `Stream unavailable (${resp2.status})` };
+      }
+
+      const text2 = await resp2.text();
+      if (!text2 || !text2.includes('#EXTM3U')) {
+        return { statusCode: 502, body: 'Invalid M3U8 response' };
+      }
+      m3u8 = text2;
+
+      // Tomar finalBase de Phase 1: si completó mientras esperábamos Phase 2, la usamos.
+      // Si aún está en curso, esperamos hasta 200ms más (no bloqueamos por más tiempo).
+      const phase1Base = await Promise.race([
+        phase1Promise,
+        new Promise(resolve => setTimeout(() => resolve(null), 200)),
+      ]);
+
+      if (phase1Base) {
+        finalBase = phase1Base;
+      } else {
+        // Phase 1 aún no terminó o falló — intentar inferir de resp2.url
+        const respUrl   = resp2.url || '';
+        const ourDomain = siteBase.replace('https://', '').replace('http://', '');
+        if (respUrl && !respUrl.includes(ourDomain) && respUrl.startsWith('http')) {
+          finalBase = respUrl.substring(0, respUrl.lastIndexOf('/') + 1);
+        }
       }
     }
 
@@ -140,16 +140,11 @@ exports.handler = async (event) => {
 
 /**
  * Reescribe URLs de segmentos para que pasen por los proxies CDN del mismo origen.
- *
- * IMPORTANTE: rutas root-relative (empiezan con /) se resuelven contra
- * el STREAMING SERVER REAL (finalBase, ej. http://216.106.177.68/live/play/TOKEN/)
- * y NO contra IPTV (allinonestream.xyz:8080).
  */
 function rewriteSegments(m3u8, finalBase, IPTV) {
-  // Extraer el origen del streaming server para rutas root-relative
   let streamingOrigin;
   try {
-    streamingOrigin = new URL(finalBase).origin; // ej: 'http://216.106.177.68'
+    streamingOrigin = new URL(finalBase).origin;
   } catch {
     streamingOrigin = IPTV;
   }
@@ -159,7 +154,7 @@ function rewriteSegments(m3u8, finalBase, IPTV) {
     try {
       let abs;
       if (uri.startsWith('http'))   abs = uri;
-      else if (uri.startsWith('/')) abs = new URL(uri, streamingOrigin).href; // root-relative → streaming server
+      else if (uri.startsWith('/')) abs = new URL(uri, streamingOrigin).href;
       else                          abs = new URL(uri, finalBase).href;
 
       const { host, pathname } = new URL(abs);
@@ -174,13 +169,11 @@ function rewriteSegments(m3u8, finalBase, IPTV) {
     }
   }
 
-  // Reescribir líneas de segmentos (no empiezan con #)
   m3u8 = m3u8.replace(/^(?!#)([^\r\n]+)$/gm, (line) => {
     const t = line.trim();
     return t ? toProxy(t) : line;
   });
 
-  // Reescribir URIs dentro de EXT-X-KEY y EXT-X-MAP
   m3u8 = m3u8.replace(
     /(#EXT-X-(?:KEY|MAP)[^\r\n]*URI=")([^"]+)(")/gm,
     (_, a, uri, b) => a + toProxy(uri) + b,

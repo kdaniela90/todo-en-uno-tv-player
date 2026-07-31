@@ -1371,14 +1371,35 @@ function _doLoadVod(videoEl,url,resumePos,myToken,retryCount){
     videoEl.src=srcUrl;
   }
   if(retryCount===0){
-    // Pre-resolver: fetch Range:bytes=0-0 para capturar la URL final tras los redirects de vod-resolve.
-    // Si vod-resolve resuelve el token → resp.url = /xtream-vod-media/TOKEN (estable).
-    // El video element usa esa URL fija → todas las Range Requests van al mismo token → funciona el seek.
+    // Pre-resolver: sigue los redirects de /api/vod-resolve para capturar la URL
+    // estable del media server (token incluido en la ruta).
+    // Solo usamos r.url si aterrizó en un CDN proxy path (/xtream-*).
+    // Si vod-resolve falla (500) o el token no se capturó, construimos
+    // el CDN fallback directamente desde los params de la URL original.
+    const params=new URLSearchParams(url.split('?')[1]||'');
+    const _u=params.get('u'),_p=params.get('p'),_id=params.get('id');
+    const _ext=params.get('ext')||'mp4',_type=params.get('type')||'movie';
+    const _prefix=_type==='series'?'xtream-series':'xtream-vod';
+    const cdnFallback=`/${_prefix}/${_u}/${_p}/${_id}.${_ext}`;
     fetch(url,{redirect:'follow',headers:{'Range':'bytes=0-0'}})
-      .then(r=>{_applySrc((r.url&&r.url.startsWith('https://'))?r.url:url);})
-      .catch(()=>{_applySrc(url);});
+      .then(r=>{
+        const finalUrl=r.url||'';
+        // Usar URL resuelta solo si aterrizó en uno de nuestros CDN proxy paths
+        if(finalUrl.includes('/xtream-')&&finalUrl.startsWith('https://')){
+          _applySrc(finalUrl);
+        }else{
+          // Fallo de vod-resolve → usar CDN proxy directo
+          _applySrc(cdnFallback);
+        }
+      })
+      .catch(()=>{_applySrc(cdnFallback);});
   } else {
-    _applySrc(url);
+    // Retry: usar CDN proxy directo (sin pasar por vod-resolve)
+    const params=new URLSearchParams(url.split('?')[1]||'');
+    const _u=params.get('u'),_p=params.get('p'),_id=params.get('id');
+    const _ext=params.get('ext')||'mp4',_type=params.get('type')||'movie';
+    const _prefix=_type==='series'?'xtream-series':'xtream-vod';
+    _applySrc(`/${_prefix}/${_u}/${_p}/${_id}.${_ext}`);
   }
 }
 function toggleFullscreen(){
