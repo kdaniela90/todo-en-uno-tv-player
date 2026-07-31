@@ -1337,29 +1337,26 @@ function loadVod(videoEl,url,resumePos){
   if(_hls){_hls.destroy();_hls=null;}
   if(_progressTimer){clearInterval(_progressTimer);_progressTimer=null;}
   _stopStallWatchdog();
-  // Extraer parámetros de la URL que viene de vod-resolve (u, p, id, ext, type)
   const params=new URLSearchParams(url.split('?')[1]||'');
   const _u=params.get('u'),_p=params.get('p'),_id=params.get('id');
-  const _ext=params.get('ext')||'mp4';
   const _type=params.get('type')||'movie';
-  // URL HLS vía Edge Function — sin Mixed Content, sin IPs Lambda bloqueadas
+  // Path A (rápido): vod-resolve captura el token IPTV y redirige a CDN HTTPS
+  // Path B (robusto): hls-live Edge Function sirve M3U8 reescrito sin Mixed Content
   const hlsUrl=`/api/hls-live?u=${enc(_u)}&p=${enc(_p)}&id=${enc(_id)}&type=${_type}`;
-  // URL CDN directa — fallback si IPTV no sirve M3U8 para este título
-  const _prefix=_type==='series'?'xtream-series':'xtream-vod';
-  const cdnDirect=`/${_prefix}/${_u}/${_p}/${_id}.${_ext}`;
-  _doLoadVod(videoEl,hlsUrl,cdnDirect,resumePos,myToken,0);
+  _doLoadVod(videoEl,url,hlsUrl,resumePos,myToken);
 }
-function _doLoadVod(videoEl,hlsUrl,cdnUrl,resumePos,myToken,retryCount){
+function _doLoadVod(videoEl,nativeUrl,hlsUrl,resumePos,myToken){
   if(myToken!==_vodToken)return;
   const loading=document.getElementById('player-loading');
   const errEl=document.getElementById('player-error-msg');
-  if(loading)loading.style.display='flex';
-  if(loading)loading.querySelector('.player-spinner').style.display='block';
+  if(loading){loading.style.display='flex';loading.querySelector('.player-spinner').style.display='block';}
   if(errEl)errEl.style.display='none';
   videoEl.pause();
 
-  function _startProgressTimer(){
-    if(_progressTimer){clearInterval(_progressTimer);_progressTimer=null;}
+  let _won=false; // true cuando algún path tuvo éxito (evita doble-ganador)
+
+  function _startProgress(){
+    if(_progressTimer)clearInterval(_progressTimer);
     _progressTimer=setInterval(()=>{
       if(myToken!==_vodToken){clearInterval(_progressTimer);_progressTimer=null;return;}
       const dur=videoEl.duration,pos=videoEl.currentTime;
@@ -1369,67 +1366,84 @@ function _doLoadVod(videoEl,hlsUrl,cdnUrl,resumePos,myToken,retryCount){
     },15000);
   }
 
-  // ── Intento 1: HLS.js vía Edge Function (sin Mixed Content) ──────────────
-  if(retryCount===0&&Hls.isSupported()){
+  function _beginPlay(){
+    if(loading)loading.style.display='none';
+    if(resumePos&&resumePos>0)videoEl.currentTime=resumePos;
+    videoEl.play().catch(()=>{});
+    _startProgress();
+  }
+
+  // Listener nativos: refs guardadas para poder quitarlos manualmente
+  function _onMeta(){
+    if(_won||myToken!==_vodToken)return;
+    _won=true;
+    videoEl.removeEventListener('error',_onErr);
+    if(_hls){_hls.destroy();_hls=null;} // cancelar HLS.js — ya no hace falta
+    _beginPlay();
+  }
+  function _onErr(){
+    videoEl.removeEventListener('loadedmetadata',_onMeta);
+    if(_won||myToken!==_vodToken)return;
+    // Path A falló (Mixed Content u otro error) → HLS.js ya corre en paralelo
+    videoEl.src=''; // limpiar para que HLS.js tome control del elemento
+  }
+
+  // ── Path A: video nativo vía vod-resolve (rápido: ~2-5s) ─────────────────
+  // vod-resolve captura token IPTV y devuelve 302 a CDN HTTPS → browser lo sigue sin Mixed Content
+  videoEl.addEventListener('loadedmetadata',_onMeta);
+  videoEl.addEventListener('error',_onErr);
+  videoEl.src=nativeUrl;
+
+  // ── Path B: HLS.js en paralelo (robusto: funciona aunque IPTV no sirva .m3u8 nativo) ──
+  if(Hls.isSupported()){
     if(_hls){_hls.destroy();_hls=null;}
     _hls=new Hls({
       enableWorker:true,
-      maxBufferLength:30,
-      maxMaxBufferLength:60,
-      fragLoadingTimeOut:12000,
-      manifestLoadingTimeOut:12000,
-      levelLoadingTimeOut:12000,
-      fragLoadingMaxRetry:2,
+      maxBufferLength:30,maxMaxBufferLength:60,
+      fragLoadingTimeOut:12000,manifestLoadingTimeOut:12000,
+      levelLoadingTimeOut:12000,manifestLoadingMaxRetry:1,
     });
+    // Carga el manifest en paralelo SIN attachMedia → no interfiere con el <video> nativo
     _hls.loadSource(hlsUrl);
-    _hls.attachMedia(videoEl);
+
     _hls.on(Hls.Events.MANIFEST_PARSED,()=>{
       if(myToken!==_vodToken){_hls.destroy();_hls=null;return;}
-      if(loading)loading.style.display='none';
-      if(resumePos&&resumePos>0)videoEl.currentTime=resumePos;
-      videoEl.play().catch(()=>{});
-      _startProgressTimer();
+      if(_won){_hls.destroy();_hls=null;return;} // Path A ya ganó
+      _won=true;
+      videoEl.removeEventListener('loadedmetadata',_onMeta);
+      videoEl.removeEventListener('error',_onErr);
+      videoEl.src=''; // quitar intento nativo antes de que HLS.js tome el elemento
+      _hls.attachMedia(videoEl);
+      // 'canplay' indica que hay suficientes segmentos para comenzar
+      videoEl.addEventListener('canplay',()=>{
+        if(myToken!==_vodToken)return;
+        _beginPlay();
+      },{once:true});
     });
+
     _hls.on(Hls.Events.ERROR,(_,d)=>{
       if(myToken!==_vodToken)return;
-      if(d.fatal){
+      if(d.fatal&&!_won){
         _hls.destroy();_hls=null;
-        // HLS.js falló → fallback a video nativo con CDN proxy
-        _doLoadVod(videoEl,hlsUrl,cdnUrl,resumePos,myToken,1);
-      }else if(d.type===Hls.ErrorTypes.MEDIA_ERROR){
+        // Ambos paths fallaron
+        videoEl.removeEventListener('loadedmetadata',_onMeta);
+        videoEl.removeEventListener('error',_onErr);
+        videoEl.src='';
+        showPlayerError('No se pudo cargar el video. El servidor puede estar ocupado.');
+      }else if(!d.fatal&&d.type===Hls.ErrorTypes.MEDIA_ERROR){
         try{_hls.recoverMediaError();}catch(e){}
       }
     });
-    return;
-  }
-
-  // ── Intento 2 / Fallback: video nativo con CDN proxy ─────────────────────
-  // Aplica si HLS.js no está soportado (Safari nativo) o si HLS.js falló (retryCount>0)
-  function _applySrc(srcUrl){
-    if(myToken!==_vodToken)return;
-    let _hasLoaded=false;
-    videoEl.addEventListener('loadedmetadata',()=>{
-      if(myToken!==_vodToken)return;
-      _hasLoaded=true;
-      if(loading)loading.style.display='none';
-      if(resumePos&&resumePos>0)videoEl.currentTime=resumePos;
-      videoEl.play().catch(()=>{});
-      _startProgressTimer();
-    },{once:true});
+  }else if(videoEl.canPlayType('application/vnd.apple.mpegurl')){
+    // Safari con HLS nativo: si Path A falla, reintentar con hlsUrl
+    videoEl.removeEventListener('error',_onErr);
     videoEl.addEventListener('error',()=>{
-      if(myToken!==_vodToken)return;
-      if(_hasLoaded)return;
-      showPlayerError('No se pudo cargar el video. El servidor puede estar ocupado.');
+      if(_won||myToken!==_vodToken)return;
+      videoEl.removeEventListener('loadedmetadata',_onMeta);
+      videoEl.addEventListener('loadedmetadata',()=>{if(!_won&&myToken===_vodToken){_won=true;_beginPlay();}},{once:true});
+      videoEl.addEventListener('error',()=>{if(!_won)showPlayerError('No se pudo cargar el video. El servidor puede estar ocupado.');},{once:true});
+      videoEl.src=hlsUrl;
     },{once:true});
-    videoEl.src=srcUrl;
-  }
-
-  if(videoEl.canPlayType('application/vnd.apple.mpegurl')){
-    // Safari — HLS nativo: usar hlsUrl directamente
-    _applySrc(hlsUrl);
-  }else{
-    // Fallback final: URL CDN proxy con extensión original (mp4/mkv)
-    _applySrc(cdnUrl);
   }
 }
 function toggleFullscreen(){
