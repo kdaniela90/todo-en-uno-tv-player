@@ -1421,9 +1421,10 @@ function _doLoadVod(videoEl,nativeUrl,hlsUrl,resumePos,myToken){
   if(errEl)errEl.style.display='none';
   videoEl.pause();
 
-  let _won=false;     // un path tuvo éxito → reproduciendo
-  let _aFailed=false; // Path A (nativo) falló
-  let _bFailed=false; // Path B (HLS.js) falló o no disponible
+  let _won=false;       // un path tuvo éxito → reproduciendo
+  let _aFailed=false;   // Path A (nativo) falló
+  let _bFailed=false;   // Path B (HLS.js) falló o no disponible
+  let _aErrCode=0;      // videoEl.error.code cuando Path A falla (para mensaje diagnóstico)
 
   function _startProgress(){
     if(_progressTimer)clearInterval(_progressTimer);
@@ -1446,7 +1447,17 @@ function _doLoadVod(videoEl,nativeUrl,hlsUrl,resumePos,myToken){
   // Error solo se muestra cuando AMBOS paths han fallado
   function _checkFail(){
     if(_aFailed&&_bFailed&&!_won&&myToken===_vodToken){
-      showPlayerError('No se pudo cargar el video. El servidor puede estar ocupado.');
+      // MEDIA_ERR_DECODE (3) = formato no compatible con el navegador
+      // MEDIA_ERR_SRC_NOT_FOUND (4) = URL inválida / servidor no respondió
+      let msg;
+      if(_aErrCode===3){
+        msg='Tu navegador no puede reproducir este formato de video. Prueba en Chrome o en la app móvil.';
+      }else if(_aErrCode===4){
+        msg='El video no está disponible en este momento. Puede que no esté incluido en tu plan.';
+      }else{
+        msg='No se pudo cargar el video. El servidor puede estar ocupado, intenta de nuevo en unos segundos.';
+      }
+      showPlayerError(msg);
     }
   }
 
@@ -1463,6 +1474,7 @@ function _doLoadVod(videoEl,nativeUrl,hlsUrl,resumePos,myToken){
     videoEl.removeEventListener('loadedmetadata',_onMeta);
     videoEl.removeEventListener('error',_onErr); // se quita a sí mismo — evita doble disparo
     if(_won||myToken!==_vodToken)return;
+    _aErrCode=videoEl.error?videoEl.error.code:0; // capturar tipo de error antes de que cambie
     _aFailed=true;
     // NO hacemos videoEl.src='' aquí: ese cambio dispara un segundo evento 'error'
     // HLS.js hará videoEl.src='' + attachMedia() en MANIFEST_PARSED si gana

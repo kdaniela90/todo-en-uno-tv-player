@@ -69,8 +69,9 @@
   status = 200
   force = true
 
+# Servidor de media 216.106.177.68 — referenciado en vod-resolve.js como /xtream-stream-hls
 [[redirects]]
   from = "/xtream-stream-hls/*"
-  to = "http://216.106.177.68/:splat"
+  to = "http://216.106.177.68:80/:splat"
   status = 200
   force = true
