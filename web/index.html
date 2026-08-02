@@ -888,8 +888,9 @@ function _fmtExpDate(v){
   // Días restantes
   const diffMs=d.getTime()-Date.now();
   const diffDays=Math.ceil(diffMs/(1000*60*60*24));
-  if(diffDays<0)return `${dateStr} (expirado)`;
-  if(diffDays<=30)return `${dateStr} (${diffDays} días)`;
+  // No marcamos como "expirado" basados en el dato de la API — puede ser inexacto.
+  // Solo mostramos días restantes si queda poco tiempo y el valor parece confiable.
+  if(diffDays>=0&&diffDays<=30)return `${dateStr} (${diffDays} días)`;
   return dateStr;
 }
 
@@ -1343,15 +1344,20 @@ function _doLoadHls(videoEl,url,myToken,retryCount){
         _stopStallWatchdog();_hls.destroy();_hls=null;
         const httpCode=d.response&&d.response.code;
         if(httpCode===403||httpCode===401){
-          // 403/401 = IPTV rechazó la solicitud. Causas posibles:
-          // límite de conexiones alcanzado, cuenta suspendida, o IPs bloqueadas.
-          // NO reintentar: cada reintento puede crear conexiones fantasma.
-          showPlayerError('Stream no disponible (403). Puede ser límite de conexiones, cuenta suspendida, o canal no incluido en tu plan.');
+          showPlayerError('Stream no disponible ('+httpCode+'). Límite de conexiones, cuenta suspendida, o canal no incluido en tu plan.');
           return;
         }
-        // Para errores de red reales: esperar 30s antes de reintentar
-        // (da tiempo a IPTV para cerrar la conexión anterior)
-        if(retryCount<1){setTimeout(()=>_doLoadHls(videoEl,url,myToken,1),30000);return;}
+        if(httpCode===404){
+          showPlayerError('Stream no encontrado (404). El canal puede no estar disponible en tu paquete.');
+          return;
+        }
+        if(httpCode>=400){
+          // Cualquier otro error HTTP (ej. 405) — mostrar código inmediatamente sin reintentar
+          showPlayerError('Error del servidor ('+httpCode+'). Contacta soporte o intenta con otro canal.');
+          return;
+        }
+        // Error de red sin código HTTP: reintentar una vez rápido (5s)
+        if(retryCount<1){setTimeout(()=>_doLoadHls(videoEl,url,myToken,1),5000);return;}
         showPlayerError('Error al cargar la señal. Verifica tu conexión o intenta con otro canal.');
       }else if(d.type===Hls.ErrorTypes.MEDIA_ERROR){
         try{_hls.recoverMediaError();}catch(e){}
@@ -1479,15 +1485,14 @@ function _doLoadVod(videoEl,nativeUrl,hlsUrl,resumePos,myToken){
           if(_hls){_hls.destroy();_hls=null;}
           _bFailed=true;
           const httpCode=d.response&&d.response.code;
-          if(httpCode===403||httpCode===401){
-            // 403/401 = IPTV rechazó la solicitud (límite de conexiones, cuenta suspendida o IPs bloqueadas)
-            // Cancelar también Path A y mostrar mensaje claro
+          if(httpCode===403||httpCode===401||httpCode>=400){
+            // 4xx = IPTV rechazó la solicitud — cancelar Path A y mostrar error inmediato
             videoEl.removeEventListener('loadedmetadata',_onMeta);
             videoEl.removeEventListener('error',_onErr);
             videoEl.pause();videoEl.src='';
             _aFailed=true;
             if(loading)loading.style.display='none';
-            showPlayerError('Stream no disponible (403). Puede ser límite de conexiones, cuenta suspendida, o canal no incluido en tu plan.');
+            showPlayerError('Stream no disponible ('+httpCode+'). Verifica tu plan o intenta con otro contenido.');
             return;
           }
           _checkFail();
