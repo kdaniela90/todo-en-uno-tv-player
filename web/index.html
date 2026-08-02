@@ -1510,17 +1510,8 @@ function _doLoadVod(videoEl,nativeUrl,hlsUrl,resumePos,myToken){
           // HLS.js aún no había ganado
           if(_hls){_hls.destroy();_hls=null;}
           _bFailed=true;
-          const httpCode=d.response&&d.response.code;
-          if(httpCode===403||httpCode===401||httpCode>=400){
-            // 4xx = IPTV rechazó la solicitud — cancelar Path A y mostrar error inmediato
-            videoEl.removeEventListener('loadedmetadata',_onMeta);
-            videoEl.removeEventListener('error',_onErr);
-            videoEl.pause();videoEl.src='';
-            _aFailed=true;
-            if(loading)loading.style.display='none';
-            showPlayerError('Stream no disponible ('+httpCode+'). Verifica tu plan o intenta con otro contenido.');
-            return;
-          }
+          // NO cancelamos Path A aunque HLS falle con 4xx — vod-resolve puede estar
+          // sirviendo la URL nativa (MP4/MKV) que sí funciona para películas y series
           _checkFail();
         }else{
           // HLS.js estaba reproduciendo y tuvo un error fatal post-victoria
@@ -2079,11 +2070,10 @@ function _showTapToPlay(videoEl){
 }
 
 // ── DIAGNÓSTICO DE STREAM ──
-// Usa automáticamente el primer canal disponible en _liveStore
+// Prueba en 2 pasos: CDN proxy (sabemos que funciona) y luego el Edge Function
 async function _diagStream(){
   const desc=document.getElementById('diag-desc');
   const result=document.getElementById('diag-result');
-  // Auto-seleccionar primer canal cargado
   const channelId=Object.keys(_liveStore||{})[0]||'';
   if(!channelId){
     result.style.display='block';
@@ -2093,18 +2083,30 @@ async function _diagStream(){
   }
   const channelName=(_liveStore[channelId]&&_liveStore[channelId].name)||channelId;
   const u=enc(S.creds.username),p=enc(S.creds.password);
-  const url=`/api/hls-live?u=${u}&p=${p}&id=${channelId}`;
-  desc.textContent='Probando...';result.style.display='none';
+  desc.textContent='Probando...';
+  result.style.display='block';
+  result.textContent=`Canal: ${channelName} (ID: ${channelId})\n\n`;
+
+  // Paso 1 — CDN proxy (el mismo que usa la carga de canales, debe funcionar)
+  result.textContent+='[1/2] CDN proxy...\n';
   try{
-    const r=await fetch(url,{signal:AbortSignal.timeout(15000)});
-    const text=await r.text();
-    result.style.display='block';
-    result.textContent=`HTTP ${r.status}\nCanal: ${channelName} (ID: ${channelId})\n\n${text.substring(0,600)}`;
-    desc.textContent=r.ok&&text.includes('#EXTM3U')?'✅ M3U8 válido':'❌ Error — ver abajo';
+    const r1=await fetch(`/xtream-api/player_api.php?username=${u}&password=${p}`,{signal:AbortSignal.timeout(8000)});
+    result.textContent+=`HTTP ${r1.status} → ${r1.ok?'✅ CDN OK':'❌ CDN error'}\n\n`;
   }catch(e){
-    result.style.display='block';
-    result.textContent=`Error: ${e.message}`;
-    desc.textContent='❌ No se pudo conectar';
+    result.textContent+=`❌ CDN: ${e.message}\n\n`;
+  }
+
+  // Paso 2 — Edge Function /api/hls-live
+  result.textContent+='[2/2] Edge Function /api/hls-live...\n';
+  try{
+    const r2=await fetch(`/api/hls-live?u=${u}&p=${p}&id=${channelId}`,{signal:AbortSignal.timeout(15000)});
+    const txt=await r2.text();
+    const ok=txt.includes('#EXTM3U');
+    result.textContent+=`HTTP ${r2.status} → ${ok?'✅ M3U8 válido':'❌ No es M3U8'}\n\n${txt.substring(0,500)}`;
+    desc.textContent=ok?'✅ Stream OK':'❌ Edge Function con error — ver abajo';
+  }catch(e){
+    result.textContent+=`❌ ${e.message}`;
+    desc.textContent='❌ Edge Function no responde';
   }
 }
 </script>

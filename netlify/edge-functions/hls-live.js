@@ -1,30 +1,25 @@
 /**
  * netlify/edge-functions/hls-live.js
  *
- * Edge Function (Deno) — proxy HLS para canales en vivo, películas y series.
+ * Edge Function (Deno) — proxy HLS para canales en vivo (multiview + player principal).
  *
- * PROBLEMA IDENTIFICADO (2025-07):
- *   Las Edge Functions tienen IPs propias (distintas a las del CDN proxy).
- *   IPTV bloquea las IPs de Edge Functions pero acepta las IPs del CDN.
- *   Evidencia: login funciona (usa /xtream-api/ → CDN IPs), live falla (fetch directo → Edge IPs).
+ * POR QUÉ Edge Function en lugar de Lambda (hls-proxy.js):
+ *   - Las IPs de AWS Lambda son bloqueadas parcialmente por IPTV → cold start + CDN self-loop = 6-8s
+ *   - Las Edge Functions corren en los nodos CDN de Netlify: sin cold start, ~0ms warm-up
+ *   - Las IPs de CDN no están bloqueadas por IPTV (lo confirma vod-resolve.js que ya usa este mismo approach)
+ *   - Fetch directo a IPTV → seguir el redirect → M3U8 real en ~200-400ms
+ *   - Resultado: multiview estable, canales cargan en <1s en lugar de 6-8s
  *
- * SOLUCIÓN — CDN self-loop:
- *   En lugar de fetchear IPTV directamente, usamos el CDN proxy /xtream-chunks/
- *   (que allinonestream.xyz comparte con todos los hosts desconocidos en _makeHlsLoader).
- *   El CDN sale con sus IPs propias → IPTV acepta la petición → M3U8 real.
- *
- * Flujo actualizado:
- *   GET /api/hls-live?u={user}&p={pass}&id={stream_id}[&type=live|movie|series]
- *   → Edge Function fetcha /xtream-chunks/{live|movie|series}/{u}/{p}/{id}.m3u8
- *     (CDN proxy → allinonestream.xyz:8080 usando IPs del CDN, no del Edge)
- *   → Si CDN pasa el 302: capturamos Location del media server → finalBase real
- *   → Si CDN absorbe el 302: recibimos M3U8 directamente → finalBase estimado
- *   → Reescribimos URLs de segmentos a rutas CDN proxy (netlify.toml)
- *   → Devolvemos M3U8 al browser con headers CORS
+ * Flujo:
+ *   GET /api/hls-live?u={user}&p={pass}&id={stream_id}
+ *   → Edge Function fetcha allinonestream.xyz:8080/live/{u}/{p}/{id}.m3u8
+ *   → IPTV responde 302 → media server (23.237.74.2/...)
+ *   → fetch sigue el redirect (redirect:'follow') → obtiene M3U8 real
+ *   → Reescribe URLs de segmentos a rutas CDN proxy (netlify.toml)
+ *   → Devuelve M3U8 al browser con headers CORS
  */
 
 const IPTV = 'http://allinonestream.xyz:8080';
-const SITE = 'https://player.todoenunotv.com';
 
 /**
  * Convierte una URL de segmento/playlist (que apunta a un servidor de media)
@@ -36,20 +31,19 @@ function toProxy(uri, finalBase) {
   try {
     let abs;
     if (uri.startsWith('http'))       abs = uri;
-    else if (uri.startsWith('/'))     abs = new URL(uri, IPTV).href;
+    else if (uri.startsWith('/'))     abs = new URL(uri, new URL(finalBase).origin).href;
     else                              abs = new URL(uri, finalBase).href;
 
-    const { host, pathname } = new URL(abs);
+    const { host, pathname, search } = new URL(abs);
 
-    // Si ya apunta a nuestro propio dominio (CDN self-loop), retornar la pathname tal cual
-    if (host === 'player.todoenunotv.com') return pathname + (new URL(abs).search || '');
-
-    // Mapeo de hosts de media server → rutas CDN proxy (debe coincidir con netlify.toml)
-    if (host === '23.237.74.2'        || host === '23.237.74.2:80')     return '/xtream-live-relay' + pathname;
-    if (host === '23.237.104.74:8080' || host === '23.237.104.74')      return '/xtream-media'      + pathname;
-    if (host === '23.158.40.201'      || host === '23.158.40.201:80')   return '/xtream-vod-media'  + pathname;
+    // Mapeo de hosts → rutas CDN proxy (debe coincidir con netlify.toml)
+    // search preserva query params (?token=...) que algunos servidores de media requieren para autenticación
+    const qs = pathname + search;
+    if (host === '23.237.74.2'        || host === '23.237.74.2:80')     return '/xtream-live-relay' + qs;
+    if (host === '23.237.104.74:8080' || host === '23.237.104.74')      return '/xtream-media'      + qs;
+    if (host === '23.158.40.201'      || host === '23.158.40.201:80')   return '/xtream-vod-media'  + qs;
     // Cualquier otro host (incluido allinonestream.xyz) → /xtream-chunks
-    return '/xtream-chunks' + pathname;
+    return '/xtream-chunks' + qs;
   } catch {
     return uri;
   }
@@ -83,76 +77,36 @@ export default async function handler(request, _context) {
     return new Response('Parámetros faltantes: u, p, id', { status: 400 });
   }
 
-  // Construir path según el tipo de contenido
-  let pathPrefix;
-  if (type === 'movie')       pathPrefix = 'movie';
-  else if (type === 'series') pathPrefix = 'series';
-  else                        pathPrefix = 'live';
-
-  // CDN self-loop: fetchear vía /xtream-chunks/ para usar IPs del CDN (no del Edge Function)
-  // /xtream-chunks/ está configurado en netlify.toml para proxear a allinonestream.xyz:8080
-  const cdnProxyUrl = `${SITE}/xtream-chunks/${pathPrefix}/${u}/${p}/${id}.m3u8`;
-  // URL base de IPTV para resolver URIs relativas en caso de que CDN absorba el redirect
-  const iptvBase = `${IPTV}/${pathPrefix}/${u}/${p}/`;
-
-  const controller = new AbortController();
-  // 12s timeout total — cubre dos fetches si el CDN pasa el redirect
-  const tid = setTimeout(() => controller.abort(), 12000);
+  // Construir path según tipo de contenido
+  const pathPrefix = type === 'movie' ? 'movie' : type === 'series' ? 'series' : 'live';
+  const iptvUrl = `${IPTV}/${pathPrefix}/${u}/${p}/${id}.m3u8`;
 
   try {
-    // ── Paso 1: Fetch vía CDN proxy con redirect:manual ──────────────────────
-    // Si el CDN pasa el 302 de IPTV → recibimos Location del media server → finalBase real
-    // Si el CDN absorbe el 302 internamente → recibimos 200 con el M3U8 directamente
-    const resp1 = await fetch(cdnProxyUrl, {
+    const controller = new AbortController();
+    // 8s timeout — suficiente para que IPTV responda, más corto que el Lambda (~10-15s)
+    const tid = setTimeout(() => controller.abort(), 8000);
+
+    const resp = await fetch(iptvUrl, {
       method:   'GET',
-      redirect: 'manual',
+      redirect: 'follow',   // Sigue el 302 de IPTV → servidor de media → M3U8 real
       headers:  { 'User-Agent': 'Mozilla/5.0', 'Accept': '*/*' },
       signal:   controller.signal,
     });
+    clearTimeout(tid);
 
-    let text, finalBase;
-
-    if (resp1.status >= 300 && resp1.status < 400) {
-      // CDN pasó el redirect → capturar la URL real del media server
-      const loc = resp1.headers.get('location') || '';
-      if (!loc) {
-        clearTimeout(tid);
-        return new Response('Redirect de IPTV sin Location header', { status: 502 });
-      }
-
-      // finalBase = URL del media server → base correcta para segmentos relativos
-      finalBase = loc.substring(0, loc.lastIndexOf('/') + 1);
-
-      // ── Paso 2: Fetch del M3U8 real desde el media server vía CDN proxy ──
-      const mediaProxyPath = toProxy(loc, iptvBase);
-      const resp2 = await fetch(SITE + mediaProxyPath, {
-        method:   'GET',
-        redirect: 'follow',
-        headers:  { 'User-Agent': 'Mozilla/5.0', 'Accept': '*/*' },
-        signal:   controller.signal,
-      });
-      clearTimeout(tid);
-
-      if (!resp2.ok) {
-        return new Response(`Media server error (${resp2.status})`, { status: resp2.status });
-      }
-      text = await resp2.text();
-
-    } else if (resp1.status === 200) {
-      // CDN absorbió el redirect y ya nos devolvió el M3U8
-      text = await resp1.text();
-      clearTimeout(tid);
-      // finalBase estimado: IPTV path base (segmentos relativos → /xtream-chunks/ → IPTV)
-      finalBase = iptvBase;
-
-    } else {
-      clearTimeout(tid);
-      return new Response(`Stream no disponible (${resp1.status})`, { status: resp1.status });
+    if (!resp.ok) {
+      return new Response(`Stream no disponible (${resp.status})`, { status: resp.status });
     }
 
+    const text = await resp.text();
     if (!text || !text.includes('#EXTM3U')) {
       return new Response('El servidor no devolvió un stream HLS válido', { status: 502 });
     }
+
+    // resp.url = URL final tras seguir redirects (ej. http://23.237.74.2/live/play/{token}/{id}.m3u8)
+    // La usamos como base para resolver URIs relativas en el M3U8
+    const finalUrl  = resp.url || iptvUrl;
+    const finalBase = finalUrl.substring(0, finalUrl.lastIndexOf('/') + 1);
 
     return new Response(rewriteM3U8(text, finalBase), {
       headers: {
@@ -161,9 +115,7 @@ export default async function handler(request, _context) {
         'Cache-Control':               'no-cache, no-store, must-revalidate',
       },
     });
-
   } catch (e) {
-    clearTimeout(tid);
     const isTimeout = e instanceof Error && e.name === 'AbortError';
     return new Response(
       isTimeout ? 'Timeout: el servidor IPTV no respondió a tiempo' : `Error de red: ${e.message}`,
