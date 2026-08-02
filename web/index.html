@@ -672,7 +672,7 @@ html, body { width: 100%; height: 100%; background: var(--bg); color: var(--text
         </div>
         <div class="settings-row">
           <span class="settings-row-icon"><i class="fa-solid fa-calendar"></i></span>
-          <div class="settings-row-info"><div class="settings-row-label">Vencimiento</div><div class="settings-row-desc" id="set-expiry-val">—</div></div>
+          <div class="settings-row-info"><div class="settings-row-label">Vencimiento</div><div class="settings-row-desc" id="set-expiry-val">—</div><div class="settings-row-desc" id="set-expiry-raw" style="font-size:11px;opacity:0.5;margin-top:2px"></div></div>
         </div>
       </div>
       <div class="settings-section">
@@ -898,7 +898,10 @@ function startApp(){
   ['screen-splash','screen-login','screen-player'].forEach(id=>document.getElementById(id).classList.remove('active'));
   document.getElementById('screen-app').classList.add('active');
   document.getElementById('set-user-val').textContent=S.creds.username||'—';
-  document.getElementById('set-expiry-val').textContent=_fmtExpDate(S.creds.userInfo?.exp_date);
+  const _rawExp=S.creds.userInfo?.exp_date;
+  document.getElementById('set-expiry-val').textContent=_fmtExpDate(_rawExp);
+  document.getElementById('set-expiry-raw').textContent='(raw: '+JSON.stringify(_rawExp)+')';
+  console.log('[TEUTV] userInfo completo:', JSON.stringify(S.creds.userInfo));
   if(typeof Notification!=='undefined'&&Notification.permission==='granted'){const nt=document.getElementById('notif-toggle');if(nt)nt.classList.add('on');}
   fetchAllData();showSection('hub');
 }
@@ -1477,13 +1480,14 @@ function _doLoadVod(videoEl,nativeUrl,hlsUrl,resumePos,myToken){
           _bFailed=true;
           const httpCode=d.response&&d.response.code;
           if(httpCode===403||httpCode===401){
-            // Límite de conexiones IPTV — cancelar también Path A y mostrar mensaje claro
+            // 403/401 = IPTV rechazó la solicitud (límite de conexiones, cuenta suspendida o IPs bloqueadas)
+            // Cancelar también Path A y mostrar mensaje claro
             videoEl.removeEventListener('loadedmetadata',_onMeta);
             videoEl.removeEventListener('error',_onErr);
             videoEl.pause();videoEl.src='';
             _aFailed=true;
             if(loading)loading.style.display='none';
-            showPlayerError('Límite de conexiones alcanzado. Cierra otros streams activos y vuelve a intentarlo.');
+            showPlayerError('Stream no disponible (403). Puede ser límite de conexiones, cuenta suspendida, o canal no incluido en tu plan.');
             return;
           }
           _checkFail();
