@@ -1278,7 +1278,7 @@ function closePlayer(){
   _stopStallWatchdog();
   if(_progressTimer){clearInterval(_progressTimer);_progressTimer=null;}
   if(_hls){_hls.destroy();_hls=null;}
-  v.src='';
+  v.src='';v.load(); // load() aborta la descarga activamente y libera la sesión IPTV
 }
 function showPlayerError(msg){
   const loading=document.getElementById('player-loading');
@@ -1896,8 +1896,8 @@ function _suspendMvHls(){
   });
   const grid=document.getElementById('mv-grid');
   if(grid){
-    // pause + src='' libera la conexión IPTV inmediatamente (el video element cierra la TCP)
-    grid.querySelectorAll('video').forEach(v=>{v.pause();v.src='';});
+    // pause + src='' + load() aborta la descarga activamente (load() es el reset W3C oficial)
+    grid.querySelectorAll('video').forEach(v=>{v.pause();v.src='';v.load();});
     grid.innerHTML=''; // quita elementos del DOM
   }
   S.mvHls.forEach(h=>{if(h)h.destroy();});
@@ -1993,7 +1993,7 @@ function clearMvSlot(slot){
   });
   // Pausar y limpiar el video ANTES de destruir HLS.js — libera la conexión IPTV inmediatamente
   const cell=document.getElementById(`mv-cell-${slot}`);
-  if(cell){const vid=cell.querySelector('video');if(vid){vid.pause();vid.src='';}}
+  if(cell){const vid=cell.querySelector('video');if(vid){vid.pause();vid.src='';vid.load();}} // load() libera sesión IPTV
   if(S.mvHls[slot]){S.mvHls[slot].destroy();S.mvHls[slot]=null;}
   S.mvChannels[slot]=null;
   _mvStallCount[slot]=0;
