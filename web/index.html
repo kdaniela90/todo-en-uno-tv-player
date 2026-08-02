@@ -672,7 +672,7 @@ html, body { width: 100%; height: 100%; background: var(--bg); color: var(--text
         </div>
         <div class="settings-row">
           <span class="settings-row-icon"><i class="fa-solid fa-calendar"></i></span>
-          <div class="settings-row-info"><div class="settings-row-label">Vencimiento</div><div class="settings-row-desc" id="set-expiry-val">—</div><div class="settings-row-desc" id="set-expiry-raw" style="font-size:11px;opacity:0.5;margin-top:2px"></div></div>
+          <div class="settings-row-info"><div class="settings-row-label">Vencimiento</div><div class="settings-row-desc" id="set-expiry-val">—</div></div>
         </div>
       </div>
       <div class="settings-section">
@@ -899,10 +899,7 @@ function startApp(){
   ['screen-splash','screen-login','screen-player'].forEach(id=>document.getElementById(id).classList.remove('active'));
   document.getElementById('screen-app').classList.add('active');
   document.getElementById('set-user-val').textContent=S.creds.username||'—';
-  const _rawExp=S.creds.userInfo?.exp_date;
-  document.getElementById('set-expiry-val').textContent=_fmtExpDate(_rawExp);
-  document.getElementById('set-expiry-raw').textContent='(raw: '+JSON.stringify(_rawExp)+')';
-  console.log('[TEUTV] userInfo completo:', JSON.stringify(S.creds.userInfo));
+  document.getElementById('set-expiry-val').textContent=_fmtExpDate(S.creds.userInfo?.exp_date);
   if(typeof Notification!=='undefined'&&Notification.permission==='granted'){const nt=document.getElementById('notif-toggle');if(nt)nt.classList.add('on');}
   fetchAllData();showSection('hub');
 }
@@ -1334,13 +1331,25 @@ function _doLoadHls(videoEl,url,myToken,retryCount){
       fragLoadingMaxRetry:3,
       loader:_makeHlsLoader(),
     });
-    console.log('[TEUTV] loadSource',url);
     _hls.loadSource(url);_hls.attachMedia(videoEl);
-    _hls.on(Hls.Events.MANIFEST_PARSED,()=>{if(myToken!==_vodToken)return;if(loading)loading.style.display='none';videoEl.play().catch(()=>{});_startStallWatchdog(videoEl,url,myToken);});
+    // Timeout de seguridad: si en 16s no arranca ni falla, mostrar error
+    const _loadTid=setTimeout(()=>{
+      if(myToken!==_vodToken)return;
+      if(_hls){_hls.destroy();_hls=null;}
+      _stopStallWatchdog();
+      showPlayerError('El servidor tardó demasiado. Intenta de nuevo o cambia de canal.');
+    },16000);
+    _hls.on(Hls.Events.MANIFEST_PARSED,()=>{
+      clearTimeout(_loadTid);
+      if(myToken!==_vodToken)return;
+      if(loading)loading.style.display='none';
+      videoEl.play().catch(()=>{});
+      _startStallWatchdog(videoEl,url,myToken);
+    });
     _hls.on(Hls.Events.ERROR,(_,d)=>{
       if(myToken!==_vodToken)return;
-      console.warn('[TEUTV HLS] ERROR',d.type,d.details,d.fatal?'FATAL':'non-fatal','url:',d.url||'(manifest)','http:',d.response?.code||'—','response:',d.response?.text||'');
       if(d.fatal){
+        clearTimeout(_loadTid);
         _stopStallWatchdog();_hls.destroy();_hls=null;
         const httpCode=d.response&&d.response.code;
         if(httpCode===403||httpCode===401){
@@ -1352,11 +1361,9 @@ function _doLoadHls(videoEl,url,myToken,retryCount){
           return;
         }
         if(httpCode>=400){
-          // Cualquier otro error HTTP (ej. 405) — mostrar código inmediatamente sin reintentar
-          showPlayerError('Error del servidor ('+httpCode+'). Contacta soporte o intenta con otro canal.');
+          showPlayerError('Error del servidor ('+httpCode+'). Intenta con otro canal.');
           return;
         }
-        // Error de red sin código HTTP: reintentar una vez rápido (5s)
         if(retryCount<1){setTimeout(()=>_doLoadHls(videoEl,url,myToken,1),5000);return;}
         showPlayerError('Error al cargar la señal. Verifica tu conexión o intenta con otro canal.');
       }else if(d.type===Hls.ErrorTypes.MEDIA_ERROR){
