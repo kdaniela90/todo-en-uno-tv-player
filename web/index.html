@@ -685,13 +685,15 @@ html, body { width: 100%; height: 100%; background: var(--bg); color: var(--text
           </div>
           <i class="fa-solid fa-chevron-right" style="color:var(--text-dim);font-size:13px" id="refresh-chevron"></i>
         </div>
-        <div class="settings-row" style="cursor:pointer" onclick="_diagStream()">
+        <div class="settings-row">
           <span class="settings-row-icon"><i class="fa-solid fa-stethoscope"></i></span>
-          <div class="settings-row-info">
+          <div class="settings-row-info" style="flex:1">
             <div class="settings-row-label">Diagnóstico de stream</div>
-            <div class="settings-row-desc" id="diag-desc">Prueba el primer canal disponible</div>
+            <div style="margin-top:6px">
+              <button onclick="_diagStream()" style="background:var(--celeste);border:none;border-radius:6px;padding:6px 14px;color:#000;font-size:13px;font-weight:600;cursor:pointer;font-family:'Poppins',sans-serif">Probar stream</button>
+            </div>
+            <div id="diag-desc" style="font-size:12px;color:var(--text-dim);margin-top:4px">Prueba automática con el primer canal disponible</div>
           </div>
-          <i class="fa-solid fa-chevron-right" style="color:var(--text-dim);font-size:13px"></i>
         </div>
         <div id="diag-result" style="display:none;margin:8px 16px 0;padding:10px 12px;background:#111;border-radius:8px;font-size:11px;font-family:monospace;color:#aaa;white-space:pre-wrap;word-break:break-all;max-height:220px;overflow:auto;border:1px solid #2a2a2a"></div>
         <div class="settings-row">
@@ -899,7 +901,8 @@ function _fmtExpDate(v){
   const diffDays=Math.ceil(diffMs/(1000*60*60*24));
   // No marcamos como "expirado" basados en el dato de la API — puede ser inexacto.
   // Solo mostramos días restantes si queda poco tiempo y el valor parece confiable.
-  if(diffDays>=0&&diffDays<=30)return `${dateStr} (${diffDays} días)`;
+  if(diffDays<0)return 'Activa (verificar con proveedor)';
+  if(diffDays<=30)return `${dateStr} (${diffDays} días)`;
   return dateStr;
 }
 
@@ -2076,25 +2079,31 @@ function _showTapToPlay(videoEl){
 }
 
 // ── DIAGNÓSTICO DE STREAM ──
-// Fetcha el Edge Function con el primer canal disponible y muestra el resultado crudo
+// Usa automáticamente el primer canal disponible en _liveStore
 async function _diagStream(){
   const desc=document.getElementById('diag-desc');
   const result=document.getElementById('diag-result');
-  const firstId=Object.keys(_liveStore||{})[0];
-  if(!firstId){result.style.display='block';result.textContent='No hay canales cargados todavía.';return;}
+  // Auto-seleccionar primer canal cargado
+  const channelId=Object.keys(_liveStore||{})[0]||'';
+  if(!channelId){
+    result.style.display='block';
+    result.textContent='No hay canales cargados todavía.\nVe a la lista de canales, espera que aparezcan, y luego regresa aquí.';
+    desc.textContent='⚠️ Sin canales cargados';
+    return;
+  }
+  const channelName=(_liveStore[channelId]&&_liveStore[channelId].name)||channelId;
   const u=enc(S.creds.username),p=enc(S.creds.password);
-  const url=`/api/hls-live?u=${u}&p=${p}&id=${firstId}`;
+  const url=`/api/hls-live?u=${u}&p=${p}&id=${channelId}`;
   desc.textContent='Probando...';result.style.display='none';
   try{
     const r=await fetch(url,{signal:AbortSignal.timeout(15000)});
     const text=await r.text();
-    const preview=text.substring(0,500);
     result.style.display='block';
-    result.textContent=`HTTP ${r.status}\nCanal ID: ${firstId}\nURL: ${url}\n\n${preview}`;
-    desc.textContent=r.ok&&text.includes('#EXTM3U')?'✅ M3U8 válido recibido':'❌ Respuesta inesperada — ver abajo';
+    result.textContent=`HTTP ${r.status}\nCanal: ${channelName} (ID: ${channelId})\n\n${text.substring(0,600)}`;
+    desc.textContent=r.ok&&text.includes('#EXTM3U')?'✅ M3U8 válido':'❌ Error — ver abajo';
   }catch(e){
     result.style.display='block';
-    result.textContent=`Error de red: ${e.message}`;
+    result.textContent=`Error: ${e.message}`;
     desc.textContent='❌ No se pudo conectar';
   }
 }
