@@ -685,6 +685,15 @@ html, body { width: 100%; height: 100%; background: var(--bg); color: var(--text
           </div>
           <i class="fa-solid fa-chevron-right" style="color:var(--text-dim);font-size:13px" id="refresh-chevron"></i>
         </div>
+        <div class="settings-row" style="cursor:pointer" onclick="_diagStream()">
+          <span class="settings-row-icon"><i class="fa-solid fa-stethoscope"></i></span>
+          <div class="settings-row-info">
+            <div class="settings-row-label">Diagnóstico de stream</div>
+            <div class="settings-row-desc" id="diag-desc">Prueba el primer canal disponible</div>
+          </div>
+          <i class="fa-solid fa-chevron-right" style="color:var(--text-dim);font-size:13px"></i>
+        </div>
+        <div id="diag-result" style="display:none;margin:8px 16px 0;padding:10px 12px;background:#111;border-radius:8px;font-size:11px;font-family:monospace;color:#aaa;white-space:pre-wrap;word-break:break-all;max-height:220px;overflow:auto;border:1px solid #2a2a2a"></div>
         <div class="settings-row">
           <span class="settings-row-icon"><i class="fa-solid fa-circle-info"></i></span>
           <div class="settings-row-info"><div class="settings-row-label">Versión</div><div class="settings-row-desc">Web Player 1.0.0</div></div>
@@ -1343,7 +1352,14 @@ function _doLoadHls(videoEl,url,myToken,retryCount){
       clearTimeout(_loadTid);
       if(myToken!==_vodToken)return;
       if(loading)loading.style.display='none';
-      videoEl.play().catch(()=>{});
+      // Intentar reproducir; si el navegador bloquea el autoplay, empezar muted
+      videoEl.play().catch(()=>{
+        videoEl.muted=true;
+        videoEl.play().catch(()=>{
+          // Incluso muted falla — mostrar botón de play visible
+          _showTapToPlay(videoEl);
+        });
+      });
       _startStallWatchdog(videoEl,url,myToken);
     });
     _hls.on(Hls.Events.ERROR,(_,d)=>{
@@ -2040,6 +2056,48 @@ function showToast(msg){const el=document.getElementById('toast');el.textContent
 
 // ── UTILS ──
 function esc(s){return String(s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#39;');}
+
+// ── TAP-TO-PLAY ──
+// Muestra un botón de play visible cuando el autoplay es bloqueado por el navegador
+function _showTapToPlay(videoEl){
+  const existing=document.getElementById('tap-to-play-overlay');
+  if(existing)existing.remove();
+  const ps=document.getElementById('screen-player');
+  const ov=document.createElement('div');
+  ov.id='tap-to-play-overlay';
+  ov.style.cssText='position:absolute;inset:0;display:flex;align-items:center;justify-content:center;z-index:20;cursor:pointer;';
+  ov.innerHTML='<div style="background:rgba(0,0,0,.7);border-radius:50%;width:72px;height:72px;display:flex;align-items:center;justify-content:center;"><i class="fa-solid fa-play" style="font-size:28px;color:#fff;margin-left:4px"></i></div>';
+  ov.onclick=function(){
+    videoEl.muted=false;
+    videoEl.play().catch(()=>{videoEl.muted=true;videoEl.play().catch(()=>{});});
+    ov.remove();
+  };
+  ps.appendChild(ov);
+}
+
+// ── DIAGNÓSTICO DE STREAM ──
+// Fetcha el Edge Function con el primer canal disponible y muestra el resultado crudo
+async function _diagStream(){
+  const desc=document.getElementById('diag-desc');
+  const result=document.getElementById('diag-result');
+  const firstId=Object.keys(_liveStore||{})[0];
+  if(!firstId){result.style.display='block';result.textContent='No hay canales cargados todavía.';return;}
+  const u=enc(S.creds.username),p=enc(S.creds.password);
+  const url=`/api/hls-live?u=${u}&p=${p}&id=${firstId}`;
+  desc.textContent='Probando...';result.style.display='none';
+  try{
+    const r=await fetch(url,{signal:AbortSignal.timeout(15000)});
+    const text=await r.text();
+    const preview=text.substring(0,500);
+    result.style.display='block';
+    result.textContent=`HTTP ${r.status}\nCanal ID: ${firstId}\nURL: ${url}\n\n${preview}`;
+    desc.textContent=r.ok&&text.includes('#EXTM3U')?'✅ M3U8 válido recibido':'❌ Respuesta inesperada — ver abajo';
+  }catch(e){
+    result.style.display='block';
+    result.textContent=`Error de red: ${e.message}`;
+    desc.textContent='❌ No se pudo conectar';
+  }
+}
 </script>
 </body>
 </html>
