@@ -1405,26 +1405,16 @@ function loadVod(videoEl,url,resumePos){
   if(_hls){_hls.destroy();_hls=null;}
   if(_progressTimer){clearInterval(_progressTimer);_progressTimer=null;}
   _stopStallWatchdog();
-  const params=new URLSearchParams(url.split('?')[1]||'');
-  const _u=params.get('u'),_p=params.get('p'),_id=params.get('id');
-  const _type=params.get('type')||'movie';
-  // Path A (rápido): vod-resolve captura el token IPTV y redirige a CDN HTTPS
-  // Path B (robusto): hls-live Edge Function sirve M3U8 reescrito sin Mixed Content
-  const hlsUrl=`/api/hls-live?u=${enc(_u)}&p=${enc(_p)}&id=${enc(_id)}&type=${_type}`;
-  _doLoadVod(videoEl,url,hlsUrl,resumePos,myToken);
+  // Una sola ruta: vod-resolve resuelve la URL final y devuelve JSON con diagnóstico real
+  _doLoadVod(videoEl,url,resumePos,myToken);
 }
-function _doLoadVod(videoEl,nativeUrl,hlsUrl,resumePos,myToken){
+function _doLoadVod(videoEl,resolveUrl,resumePos,myToken){
   if(myToken!==_vodToken)return;
   const loading=document.getElementById('player-loading');
   const errEl=document.getElementById('player-error-msg');
   if(loading){loading.style.display='flex';loading.querySelector('.player-spinner').style.display='block';}
   if(errEl)errEl.style.display='none';
   videoEl.pause();
-
-  let _won=false;       // un path tuvo éxito → reproduciendo
-  let _aFailed=false;   // Path A (nativo) falló
-  let _bFailed=false;   // Path B (HLS.js) falló o no disponible
-  let _aErrCode=0;      // videoEl.error.code cuando Path A falla (para mensaje diagnóstico)
 
   function _startProgress(){
     if(_progressTimer)clearInterval(_progressTimer);
@@ -1444,119 +1434,67 @@ function _doLoadVod(videoEl,nativeUrl,hlsUrl,resumePos,myToken){
     _startProgress();
   }
 
-  // Error solo se muestra cuando AMBOS paths han fallado
-  function _checkFail(){
-    if(_aFailed&&_bFailed&&!_won&&myToken===_vodToken){
-      // MEDIA_ERR_DECODE (3) = formato no compatible con el navegador
-      // MEDIA_ERR_SRC_NOT_FOUND (4) = URL inválida / servidor no respondió
-      let msg;
-      if(_aErrCode===3){
-        msg='Tu navegador no puede reproducir este formato de video. Prueba en Chrome o en la app móvil.';
-      }else if(_aErrCode===4){
-        msg='El video no está disponible en este momento. Puede que no esté incluido en tu plan.';
-      }else{
-        msg='No se pudo cargar el video. El servidor puede estar ocupado, intenta de nuevo en unos segundos.';
+  // Paso 1: vod-resolve devuelve JSON — detecta 401/403 del proveedor ANTES de tocar <video>
+  // Una sola conexión a IPTV (no dos en paralelo)
+  fetch(resolveUrl)
+    .then(r=>r.json())
+    .then(json=>{
+      if(myToken!==_vodToken)return;
+
+      // Error diagnosticado en el servidor — código HTTP real de IPTV
+      if(json.error){
+        if(loading)loading.style.display='none';
+        if(json.error==='auth'){
+          // 401/403 confirmado desde IPTV → este SÍ puede ser problema de plan
+          showPlayerError('Acceso denegado ('+json.code+'). El contenido puede no estar incluido en tu plan.');
+        }else if(json.error==='notfound'){
+          showPlayerError('Contenido no encontrado (404). Puede no estar disponible en tu paquete.');
+        }else if(json.error==='timeout'){
+          showPlayerError('El servidor tardó demasiado. Intenta de nuevo en unos segundos.');
+        }else{
+          showPlayerError('Error del servidor ('+(json.code||'')+'). Intenta de nuevo.');
+        }
+        return;
       }
-      showPlayerError(msg);
-    }
-  }
 
-  // Refs con nombre para poder quitar listeners manualmente
-  function _onMeta(){
-    if(_won||myToken!==_vodToken)return;
-    _won=true;
-    videoEl.removeEventListener('loadedmetadata',_onMeta); // se quita a sí mismo
-    videoEl.removeEventListener('error',_onErr);
-    if(_hls){_hls.destroy();_hls=null;} // HLS.js ya no hace falta
-    _beginPlay();
-  }
-  function _onErr(){
-    videoEl.removeEventListener('loadedmetadata',_onMeta);
-    videoEl.removeEventListener('error',_onErr); // se quita a sí mismo — evita doble disparo
-    if(_won||myToken!==_vodToken)return;
-    _aErrCode=videoEl.error?videoEl.error.code:0; // capturar tipo de error antes de que cambie
-    _aFailed=true;
-    // NO hacemos videoEl.src='' aquí: ese cambio dispara un segundo evento 'error'
-    // HLS.js hará videoEl.src='' + attachMedia() en MANIFEST_PARSED si gana
-    _checkFail();
-  }
+      if(!json.url){
+        if(loading)loading.style.display='none';
+        showPlayerError('No se pudo resolver la URL del video. Intenta de nuevo.');
+        return;
+      }
 
-  // ── Path A: video nativo vía vod-resolve (~2-5s cuando IPTV responde) ────
-  // vod-resolve captura el token del IPTV y redirige al browser a una URL CDN HTTPS
-  // El <video> sigue el 302 automáticamente → sin Mixed Content
-  videoEl.addEventListener('loadedmetadata',_onMeta);
-  videoEl.addEventListener('error',_onErr);
-  videoEl.src=nativeUrl;
-
-  // ── Path B: HLS.js en paralelo, sin attachMedia hasta ganar ──────────────
-  // Corre en paralelo: si IPTV sirve .m3u8 para este título → HLS.js gana
-  // Si no lo sirve → HLS.js falla; Path A puede seguir funcionando
-  if(Hls.isSupported()){
-    if(_hls){_hls.destroy();_hls=null;}
-    _hls=new Hls({
-      enableWorker:true,
-      maxBufferLength:30,maxMaxBufferLength:60,
-      fragLoadingTimeOut:12000,manifestLoadingTimeOut:12000,
-      levelLoadingTimeOut:12000,manifestLoadingMaxRetry:1,
-    });
-    _hls.loadSource(hlsUrl); // carga manifest SIN tocar el <video>
-
-    _hls.on(Hls.Events.MANIFEST_PARSED,()=>{
-      if(myToken!==_vodToken){if(_hls){_hls.destroy();_hls=null;}return;}
-      if(_won){if(_hls){_hls.destroy();_hls=null;}return;} // Path A ya ganó primero
-      _won=true;
-      videoEl.removeEventListener('loadedmetadata',_onMeta);
-      videoEl.removeEventListener('error',_onErr);
-      videoEl.src='';         // cancelar intento nativo
-      _hls.attachMedia(videoEl);
-      videoEl.addEventListener('canplay',()=>{
+      // Paso 2: URL resuelta → HTTPS garantizado (CDN proxy o /api/vod-stream)
+      // Sin Mixed Content, sin segunda conexión IPTV
+      const _onMeta=function(){
+        videoEl.removeEventListener('loadedmetadata',_onMeta);
+        videoEl.removeEventListener('error',_onErr);
         if(myToken!==_vodToken)return;
         _beginPlay();
-      },{once:true});
-    });
-
-    _hls.on(Hls.Events.ERROR,(_,d)=>{
-      if(myToken!==_vodToken)return;
-      if(d.fatal){
-        if(!_won){
-          // HLS.js aún no había ganado
-          if(_hls){_hls.destroy();_hls=null;}
-          _bFailed=true;
-          // NO cancelamos Path A aunque HLS falle con 4xx — vod-resolve puede estar
-          // sirviendo la URL nativa (MP4/MKV) que sí funciona para películas y series
-          _checkFail();
-        }else{
-          // HLS.js estaba reproduciendo y tuvo un error fatal post-victoria
-          // Intentar recuperar; si no es posible, avisar al usuario
-          if(d.type===Hls.ErrorTypes.MEDIA_ERROR){
-            try{if(_hls)_hls.recoverMediaError();}catch(e){
-              showPlayerError('La reproducción se interrumpió. Intenta de nuevo.');
-            }
-          }else{
-            showPlayerError('La reproducción se interrumpió. Intenta de nuevo.');
-          }
-        }
-      }else if(d.type===Hls.ErrorTypes.MEDIA_ERROR){
-        try{if(_hls)_hls.recoverMediaError();}catch(e){}
-      }
-    });
-  }else{
-    _bFailed=true; // No hay HLS.js (navegador sin MSE)
-    if(videoEl.canPlayType('application/vnd.apple.mpegurl')){
-      // Safari: HLS nativo en Path A ya intentará ambas URLs
-      videoEl.removeEventListener('error',_onErr);
-      videoEl.addEventListener('error',()=>{
-        if(_won||myToken!==_vodToken)return;
-        // nativeUrl falló en Safari → intentar hlsUrl directamente
+      };
+      const _onErr=function(){
         videoEl.removeEventListener('loadedmetadata',_onMeta);
-        const _safariMeta=()=>{if(!_won&&myToken===_vodToken){_won=true;_beginPlay();}};
-        const _safariErr=()=>{if(!_won){_aFailed=true;_checkFail();}};
-        videoEl.addEventListener('loadedmetadata',_safariMeta,{once:true});
-        videoEl.addEventListener('error',_safariErr,{once:true});
-        videoEl.src=hlsUrl;
-      },{once:true});
-    }
-  }
+        videoEl.removeEventListener('error',_onErr);
+        if(myToken!==_vodToken)return;
+        if(loading)loading.style.display='none';
+        const code=videoEl.error?videoEl.error.code:0;
+        if(code===3){
+          // MEDIA_ERR_DECODE: codec/contenedor incompatible con este navegador
+          showPlayerError('Este video usa un formato que la app puede reproducir, pero tu navegador no admite. Prueba en Chrome o en la app móvil.');
+        }else{
+          // code 4 u otro: problema de red, servidor ocupado, conexión interrumpida
+          // NO decir "plan" aquí — el 401/403 ya fue capturado arriba como json.error='auth'
+          showPlayerError('No se pudo cargar el video. El servidor puede estar ocupado o el contenido no está disponible temporalmente.');
+        }
+      };
+      videoEl.addEventListener('loadedmetadata',_onMeta);
+      videoEl.addEventListener('error',_onErr);
+      videoEl.src=json.url;
+    })
+    .catch(()=>{
+      if(myToken!==_vodToken)return;
+      if(loading)loading.style.display='none';
+      showPlayerError('Error de conexión. Verifica tu internet e intenta de nuevo.');
+    });
 }
 function toggleFullscreen(){
   const v=document.getElementById('player-video');
