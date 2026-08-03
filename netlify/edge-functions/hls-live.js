@@ -7,14 +7,21 @@
  *   GET /api/hls-live?u={user}&p={pass}&id={stream_id}[&type=live|movie|series]
  *   → Edge Function fetcha allinonestream.xyz:8080/{live|movie|series}/{u}/{p}/{id}.m3u8
  *   → IPTV responde 302 → media server → fetch sigue (redirect:'follow') → M3U8 real
- *   → Si el M3U8 es un MASTER playlist (#EXT-X-STREAM-INF):
- *       Seleccionar variante de mayor bandwidth y fetchearla internamente (secuencial,
- *       no en paralelo) → devolver el M3U8 de media directamente al browser.
- *       RAZÓN: sin esto el browser haría una segunda petición al media server para obtener
- *       la variante, lo que crea una 2ª sesión IPTV simultánea → canal en negro cuando
- *       el proveedor tiene límite max_connections=1.
- *   → Si el M3U8 es ya un media playlist: reescribir URLs de segmentos a CDN proxy.
- *   → Devolver M3U8 al browser con headers CORS.
+ *   → rewriteM3U8 convierte TODAS las URLs no-# (segmentos Y variantes de master)
+ *     a rutas CDN proxy (/xtream-*) para que el browser nunca contacte el media server
+ *     directamente.
+ *   → Se devuelve el M3U8 (master o media) con URLs reescritas. HLS.js en el browser
+ *     gestiona la selección de variante y fetcha todo vía CDN proxy.
+ *
+ * NOTA sobre el fetch interno de variante (eliminado):
+ *   Existía un "Paso 2" que fetcheaba la variante de mayor BANDWIDTH directamente
+ *   desde la Edge Function para evitar que el browser hiciera una segunda petición.
+ *   Se eliminó porque generaba una segunda conexión TCP desde la IP de la Edge Function
+ *   al media server, lo que puede incrementar el contador de sesiones del proveedor.
+ *   rewriteM3U8 ya reescribe las URLs de variantes en un master playlist, por lo que
+ *   HLS.js las pedirá vía CDN y no a través de la autenticación IPTV.
+ *   Si aparece un problema de token ligado a IP con variantes, reintroducir este bloque:
+ *   buscar "PASO2_VARIANT_FETCH" en el historial de git.
  */
 
 const IPTV = 'http://allinonestream.xyz:8080';
@@ -63,31 +70,6 @@ function rewriteM3U8(m3u8, finalBase) {
   return m3u8;
 }
 
-/**
- * Si el M3U8 es un master playlist, retorna la URL absoluta de la variante
- * con mayor bandwidth. Retorna null si no es master o no hay variantes válidas.
- */
-function pickBestVariant(masterText, baseUrl) {
-  let bestBw = -1, bestUrl = null;
-  const lines = masterText.split('\n');
-  for (let i = 0; i < lines.length; i++) {
-    const line = lines[i].trim();
-    if (!line.startsWith('#EXT-X-STREAM-INF:')) continue;
-    const bwMatch = line.match(/BANDWIDTH=(\d+)/i);
-    const bw = bwMatch ? parseInt(bwMatch[1], 10) : 0;
-    // La siguiente línea no-comentario es la URL de la variante
-    let j = i + 1;
-    while (j < lines.length && lines[j].trim().startsWith('#')) j++;
-    const varLine = (lines[j] || '').trim();
-    if (varLine && bw >= bestBw) {
-      bestBw = bw;
-      try {
-        bestUrl = varLine.startsWith('http') ? varLine : new URL(varLine, baseUrl).href;
-      } catch {}
-    }
-  }
-  return bestUrl;
-}
 
 const HLS_HEADERS = {
   'Content-Type':                'application/vnd.apple.mpegurl; charset=utf-8',
@@ -134,40 +116,10 @@ export default async function handler(request, _context) {
     const finalUrl  = resp.url || iptvUrl;
     const finalBase = finalUrl.substring(0, finalUrl.lastIndexOf('/') + 1);
 
-    // ── Paso 2: detectar master playlist y resolver variante internamente ────────
-    // Sin esto, el browser hace una 2ª petición al media server para la variante
-    // → 2 sesiones IPTV simultáneas → canal bloqueado cuando max_connections=1.
-    if (text.includes('#EXT-X-STREAM-INF')) {
-      const variantUrl = pickBestVariant(text, finalBase);
-      if (variantUrl) {
-        try {
-          const ctrl2 = new AbortController();
-          const tid2  = setTimeout(() => ctrl2.abort(), 5000);
-
-          const varResp = await fetch(variantUrl, {
-            method:   'GET',
-            redirect: 'follow',
-            headers:  { 'User-Agent': 'Mozilla/5.0', 'Accept': '*/*' },
-            signal:   ctrl2.signal,
-          });
-          clearTimeout(tid2);
-
-          if (varResp.ok) {
-            const varText = await varResp.text();
-            if (varText && varText.includes('#EXTM3U')) {
-              const varFinalUrl  = varResp.url || variantUrl;
-              const varFinalBase = varFinalUrl.substring(0, varFinalUrl.lastIndexOf('/') + 1);
-              return new Response(rewriteM3U8(varText, varFinalBase), { headers: HLS_HEADERS });
-            }
-          }
-          clearTimeout(tid2);
-        } catch (_) {
-          // Si la variante falla, caer al master reescrito (HLS.js lo gestiona)
-        }
-      }
-    }
-
-    // ── Paso 3: M3U8 de media (no es master) o fallback ─────────────────────────
+    // ── Paso 2: devolver M3U8 con todas las URLs reescritas a CDN proxy ─────────
+    // rewriteM3U8 reescribe tanto segmentos (media playlist) como URLs de variantes
+    // (master playlist). HLS.js en el browser gestiona la selección de variante y
+    // fetcha todo vía /xtream-* → CDN → media server, sin contactar IPTV auth de nuevo.
     return new Response(rewriteM3U8(text, finalBase), { headers: HLS_HEADERS });
 
   } catch (e) {

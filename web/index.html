@@ -686,17 +686,6 @@ html, body { width: 100%; height: 100%; background: var(--bg); color: var(--text
           <i class="fa-solid fa-chevron-right" style="color:var(--text-dim);font-size:13px" id="refresh-chevron"></i>
         </div>
         <div class="settings-row">
-          <span class="settings-row-icon"><i class="fa-solid fa-stethoscope"></i></span>
-          <div class="settings-row-info" style="flex:1">
-            <div class="settings-row-label">Diagnóstico de stream</div>
-            <div style="margin-top:6px">
-              <button onclick="_diagStream()" style="background:var(--celeste);border:none;border-radius:6px;padding:6px 14px;color:#000;font-size:13px;font-weight:600;cursor:pointer;font-family:'Poppins',sans-serif">Probar stream</button>
-            </div>
-            <div id="diag-desc" style="font-size:12px;color:var(--text-dim);margin-top:4px">Prueba automática con el primer canal disponible</div>
-          </div>
-        </div>
-        <div id="diag-result" style="display:none;margin:8px 16px 0;padding:10px 12px;background:#111;border-radius:8px;font-size:11px;font-family:monospace;color:#aaa;white-space:pre-wrap;word-break:break-all;max-height:220px;overflow:auto;border:1px solid #2a2a2a"></div>
-        <div class="settings-row">
           <span class="settings-row-icon"><i class="fa-solid fa-circle-info"></i></span>
           <div class="settings-row-info"><div class="settings-row-label">Versión</div><div class="settings-row-desc">Web Player 1.0.0</div></div>
         </div>
@@ -882,27 +871,26 @@ function loginErr(m){const e=document.getElementById('login-err');e.textContent=
 
 // Formatea exp_date de Xtream Codes — acepta Unix timestamp (segundos), string de fecha, o null.
 function _fmtExpDate(v){
-  // null, 0 o "0" → cuenta sin vencimiento
+  // null, 0 o "0" → cuenta sin vencimiento registrada
   if(v===null||v===undefined||v===''||v==='0'||v===0)return 'Sin vencimiento';
   const n=Number(v);
   let d;
   if(!isNaN(n)&&n>86400){
-    // Unix timestamp en segundos (el formato estándar de Xtream Codes)
+    // Unix timestamp en segundos (formato estándar de Xtream Codes)
     d=new Date(n*1000);
   }else{
-    // Algunos paneles devuelven la fecha ya como string ("2025-12-31")
+    // Algunos paneles devuelven la fecha como string ("2025-12-31")
     d=new Date(v);
   }
   if(isNaN(d.getTime()))return String(v); // si no parsea, devuelve el valor raw
   const opts={day:'2-digit',month:'long',year:'numeric'};
   const dateStr=d.toLocaleDateString('es-MX',opts);
-  // Días restantes
   const diffMs=d.getTime()-Date.now();
   const diffDays=Math.ceil(diffMs/(1000*60*60*24));
-  // No marcamos como "expirado" basados en el dato de la API — puede ser inexacto.
-  // Solo mostramos días restantes si queda poco tiempo y el valor parece confiable.
-  if(diffDays<0)return 'Activa (verificar con proveedor)';
-  if(diffDays<=30)return `${dateStr} (${diffDays} días)`;
+  if(diffDays<0)return `Vencida · ${dateStr}`;
+  if(diffDays===0)return `Vence hoy · ${dateStr}`;
+  if(diffDays<=7)return `${dateStr} · ⚠️ ${diffDays} día${diffDays===1?'':'s'}`;
+  if(diffDays<=30)return `${dateStr} · ${diffDays} días`;
   return dateStr;
 }
 
@@ -1241,6 +1229,8 @@ let _hls=null;
 let _vodToken=0;
 let _progressTimer=null;
 let _stallWatchdog=null;
+let _retryTid=null;       // setTimeout del único retry permitido por apertura de canal
+let _lastFragTime=0;      // Date.now() del último fragmento HLS cargado (para watchdog)
 
 // Progress persistence
 function _saveProgress(type,id,pos,dur){try{const k='teutv_progress',all=JSON.parse(localStorage.getItem(k)||'{}');all[type+'_'+id]={pos:Math.floor(pos),dur:Math.floor(dur),ts:Date.now()};localStorage.setItem(k,JSON.stringify(all));}catch(e){}}
@@ -1250,6 +1240,7 @@ function _fmtTime(s){const m=Math.floor(s/60),sec=Math.floor(s%60);return m+':'+
 
 function openPlayer(title){_suspendMvHls();document.getElementById('screen-app').classList.remove('active');document.getElementById('screen-player').classList.add('active');document.getElementById('player-title').textContent=title;document.getElementById('player-loading').style.display='flex';}
 function _stopStallWatchdog(){if(_stallWatchdog){clearInterval(_stallWatchdog);_stallWatchdog=null;}}
+function _cancelRetry(){if(_retryTid){clearTimeout(_retryTid);_retryTid=null;}}
 function _startStallWatchdog(videoEl,url,myToken){
   _stopStallWatchdog();
   let _lastCt=-1,_ticks=0;
@@ -1258,10 +1249,30 @@ function _startStallWatchdog(videoEl,url,myToken){
     if(videoEl.paused||videoEl.ended)return;
     const ct=videoEl.currentTime;
     if(ct===_lastCt){
-      if(++_ticks>=2){
+      if(++_ticks>=4){  // 4 ticks × 5 s = 20 s sin avance antes de actuar
         _ticks=0;_lastCt=-1;
-        if(_hls){try{_hls.startLoad();}catch(e){}}
-        else{_doLoadHls(videoEl,url,myToken,0);}
+
+        // No actuar si el browser ya tiene datos: readyState HAVE_FUTURE_DATA o mayor
+        if(videoEl.readyState>=3)return;
+
+        // No actuar si hay al menos 2 s de buffer disponibles por delante del punto actual
+        try{
+          const buf=videoEl.buffered;
+          for(let i=0;i<buf.length;i++){if(buf.end(i)>ct+2)return;}
+        }catch(_){}
+
+        // No actuar si un fragmento se cargó en los últimos 20 s (buffering activo)
+        if(_lastFragTime&&(Date.now()-_lastFragTime)<20000)return;
+
+        if(_hls){
+          // Reanudar la carga HLS existente. No abre una nueva sesión IPTV.
+          try{_hls.startLoad();}catch(e){}
+        }else{
+          // _hls===null aquí es una race condition entre destroy() y el tick del intervalo.
+          // No iniciar un stream nuevo desde aquí: el manejador de error ya programó
+          // el único retry controlado (o el canal fue cerrado).
+          _stopStallWatchdog();
+        }
       }
     }else{_lastCt=ct;_ticks=0;}
   },5000);
@@ -1272,13 +1283,14 @@ function closePlayer(){
     _saveProgress(S.currentPlayer.type,S.currentPlayer.id,v.currentTime,v.duration);
   }
   _vodToken++; // invalidate any pending error/loadedmetadata listeners before touching src
+  _cancelRetry(); // cancelar retry pendiente antes de tocar el DOM/video
   document.getElementById('screen-player').classList.remove('active');
   document.getElementById('screen-app').classList.add('active');
   v.pause();
   _stopStallWatchdog();
   if(_progressTimer){clearInterval(_progressTimer);_progressTimer=null;}
   if(_hls){_hls.destroy();_hls=null;}
-  v.src='';v.load(); // load() aborta la descarga activamente y libera la sesión IPTV
+  v.removeAttribute('src');v.load(); // removeAttribute+load() libera la sesión IPTV
 }
 function showPlayerError(msg){
   const loading=document.getElementById('player-loading');
@@ -1317,13 +1329,14 @@ function _makeHlsLoader(){
 function loadHls(videoEl,url){
   _vodToken++;
   const myToken=_vodToken;
+  _cancelRetry();          // cancelar cualquier retry en vuelo del canal anterior
   if(_hls){_hls.destroy();_hls=null;}
-  // Resetear el elemento <video> inmediatamente para cerrar la sesión IPTV activa
-  // antes de abrir la nueva. Sin esto el browser mantiene la conexión CDN→media server
-  // abierta y IPTV puede ver dos sesiones simultáneas al cambiar canal rápido.
-  videoEl.pause();videoEl.src='';videoEl.load();
+  // Resetear el elemento <video> para cerrar la sesión IPTV activa antes de abrir la nueva.
+  // removeAttribute('src') + load() es más limpio que src='' en algunos browsers.
+  videoEl.pause();videoEl.removeAttribute('src');videoEl.load();
   if(_progressTimer){clearInterval(_progressTimer);_progressTimer=null;}
   _stopStallWatchdog();
+  _lastFragTime=0;         // resetear actividad de fragmentos del canal anterior
   _doLoadHls(videoEl,url,myToken,0);
 }
 function _doLoadHls(videoEl,url,myToken,retryCount){
@@ -1348,6 +1361,8 @@ function _doLoadHls(videoEl,url,myToken,retryCount){
       loader:_makeHlsLoader(),
     });
     _hls.loadSource(url);_hls.attachMedia(videoEl);
+    // Registrar actividad de fragmentos para que el watchdog no dispare durante buffering
+    _hls.on(Hls.Events.FRAG_LOADED,()=>{_lastFragTime=Date.now();});
     // Timeout de seguridad: si en 16s no arranca ni falla, mostrar error
     const _loadTid=setTimeout(()=>{
       if(myToken!==_vodToken)return;
@@ -1387,7 +1402,14 @@ function _doLoadHls(videoEl,url,myToken,retryCount){
           showPlayerError('Error del servidor ('+httpCode+'). Intenta con otro canal.');
           return;
         }
-        if(retryCount<1){setTimeout(()=>_doLoadHls(videoEl,url,myToken,1),5000);return;}
+        if(retryCount<1){
+          // Liberar la sesión IPTV anterior antes de abrir la nueva.
+          // Máximo un retry por apertura de canal: retryCount=1 en el callback.
+          videoEl.pause();videoEl.removeAttribute('src');videoEl.load();
+          _cancelRetry(); // por si el watchdog ya programó algo (no debería, pero por seguridad)
+          _retryTid=setTimeout(()=>{_retryTid=null;_doLoadHls(videoEl,url,myToken,1);},5000);
+          return;
+        }
         showPlayerError('Error al cargar la señal. Verifica tu conexión o intenta con otro canal.');
       }else if(d.type===Hls.ErrorTypes.MEDIA_ERROR){
         try{_hls.recoverMediaError();}catch(e){}
@@ -1398,7 +1420,13 @@ function _doLoadHls(videoEl,url,myToken,retryCount){
     videoEl.addEventListener('loadedmetadata',()=>{if(myToken!==_vodToken)return;if(loading)loading.style.display='none';videoEl.play().catch(()=>{});_startStallWatchdog(videoEl,url,myToken);},{once:true});
     videoEl.addEventListener('error',()=>{
       if(myToken!==_vodToken)return;
-      if(retryCount<1){_stopStallWatchdog();setTimeout(()=>_doLoadHls(videoEl,url,myToken,1),5000);return;}
+      if(retryCount<1){
+        _stopStallWatchdog();
+        videoEl.pause();videoEl.removeAttribute('src');videoEl.load();
+        _cancelRetry();
+        _retryTid=setTimeout(()=>{_retryTid=null;_doLoadHls(videoEl,url,myToken,1);},5000);
+        return;
+      }
       showPlayerError('Error al cargar el contenido.');
     },{once:true});
   }
@@ -1406,6 +1434,7 @@ function _doLoadHls(videoEl,url,myToken,retryCount){
 function loadVod(videoEl,url,resumePos){
   _vodToken++;
   const myToken=_vodToken;
+  _cancelRetry(); // cancelar retry de canal en vivo si se abre VOD
   if(_hls){_hls.destroy();_hls=null;}
   if(_progressTimer){clearInterval(_progressTimer);_progressTimer=null;}
   _stopStallWatchdog();
@@ -2023,46 +2052,6 @@ function _showTapToPlay(videoEl){
   ps.appendChild(ov);
 }
 
-// ── DIAGNÓSTICO DE STREAM ──
-// Prueba en 2 pasos: CDN proxy (sabemos que funciona) y luego el Edge Function
-async function _diagStream(){
-  const desc=document.getElementById('diag-desc');
-  const result=document.getElementById('diag-result');
-  const channelId=Object.keys(_liveStore||{})[0]||'';
-  if(!channelId){
-    result.style.display='block';
-    result.textContent='No hay canales cargados todavía.\nVe a la lista de canales, espera que aparezcan, y luego regresa aquí.';
-    desc.textContent='⚠️ Sin canales cargados';
-    return;
-  }
-  const channelName=(_liveStore[channelId]&&_liveStore[channelId].name)||channelId;
-  const u=enc(S.creds.username),p=enc(S.creds.password);
-  desc.textContent='Probando...';
-  result.style.display='block';
-  result.textContent=`Canal: ${channelName} (ID: ${channelId})\n\n`;
-
-  // Paso 1 — CDN proxy (el mismo que usa la carga de canales, debe funcionar)
-  result.textContent+='[1/2] CDN proxy...\n';
-  try{
-    const r1=await fetch(`/xtream-api/player_api.php?username=${u}&password=${p}`,{signal:AbortSignal.timeout(8000)});
-    result.textContent+=`HTTP ${r1.status} → ${r1.ok?'✅ CDN OK':'❌ CDN error'}\n\n`;
-  }catch(e){
-    result.textContent+=`❌ CDN: ${e.message}\n\n`;
-  }
-
-  // Paso 2 — Edge Function /api/hls-live
-  result.textContent+='[2/2] Edge Function /api/hls-live...\n';
-  try{
-    const r2=await fetch(`/api/hls-live?u=${u}&p=${p}&id=${channelId}`,{signal:AbortSignal.timeout(15000)});
-    const txt=await r2.text();
-    const ok=txt.includes('#EXTM3U');
-    result.textContent+=`HTTP ${r2.status} → ${ok?'✅ M3U8 válido':'❌ No es M3U8'}\n\n${txt.substring(0,500)}`;
-    desc.textContent=ok?'✅ Stream OK':'❌ Edge Function con error — ver abajo';
-  }catch(e){
-    result.textContent+=`❌ ${e.message}`;
-    desc.textContent='❌ Edge Function no responde';
-  }
-}
 </script>
 </body>
 </html>
