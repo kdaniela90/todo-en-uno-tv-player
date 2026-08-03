@@ -472,6 +472,13 @@ html, body { width: 100%; height: 100%; background: var(--bg); color: var(--text
 </head>
 <body>
 
+<!-- OVERLAY DE ESPERA DE LIBERACIÓN DE SESIÓN IPTV -->
+<!-- Ajuste 5: hijo directo de body, position:fixed → visible en cualquier pantalla activa -->
+<div id="releasing-overlay" style="display:none;position:fixed;inset:0;z-index:9999;background:rgba(0,0,0,0.82);flex-direction:column;align-items:center;justify-content:center;gap:16px;font-family:Poppins,sans-serif;color:#fff;text-align:center;pointer-events:all">
+  <div style="width:36px;height:36px;border:3px solid rgba(255,255,255,0.2);border-top-color:#00b4d8;border-radius:50%;animation:spin 0.8s linear infinite"></div>
+  <span style="font-size:14px;opacity:0.85">Cerrando reproducciones anteriores…</span>
+</div>
+
 <!-- SPLASH -->
 <div id="screen-splash" class="screen active">
   <canvas id="splash-canvas" class="splash-canvas" width="80" height="160"></canvas>
@@ -965,6 +972,20 @@ const TITLES={live:'TV en Vivo',movies:'Películas',series:'Series',search:'Bús
 const ALL_VIEWS=['hub','live','movies','series','search','parental','settings'];
 function showSection(sec){
   S.currentSection=sec;
+
+  // Rama multiview: transición async — enterMultiview() gestiona el controlador
+  if(sec==='multiview'){
+    enterMultiview(); // fire-and-forget; la guarda de generación maneja cancelaciones
+    return;
+  }
+
+  // Para cualquier otra sección: detener multiview inmediatamente, sin espera
+  if(_playbackMode==='multiview'||_hasMultiviewPlayback()){
+    _playbackGeneration++;       // cancela cualquier enterMultiview() en vuelo
+    _stopAllMultiviewStreams();
+    if(_playbackMode==='multiview')_playbackMode='none';
+  }
+
   const isHub=sec==='hub';
   const backEl=document.getElementById('topbar-back');
   const titleEl=document.getElementById('topbar-title');
@@ -980,13 +1001,12 @@ function showSection(sec){
 
   const mv=document.getElementById('view-multiview'),content=document.getElementById('main-content');
   const appEl=document.getElementById('screen-app');
-  if(sec==='multiview'){content.style.display='none';mv.style.display='flex';appEl.classList.add('mv-active');}
-  else{_suspendMvHls();content.style.display='';mv.style.display='none';appEl.classList.remove('mv-active');ALL_VIEWS.forEach(v=>{const el=document.getElementById('view-'+v);if(el)el.style.display=v===sec?'':'none';});}
+  content.style.display='';mv.style.display='none';appEl.classList.remove('mv-active');
+  ALL_VIEWS.forEach(v=>{const el=document.getElementById('view-'+v);if(el)el.style.display=v===sec?'':'none';});
 
   if(sec==='live')renderLive();
   if(sec==='movies')renderMovies();
   if(sec==='series')renderSeries();
-  if(sec==='multiview')renderMultiview();
   if(sec==='parental')renderParental();
 
   if(sec==='search'){
@@ -1046,7 +1066,14 @@ async function fetchEpgBatch(streams){
     await new Promise(r=>setTimeout(r,120));
   }
 }
-function playLive(id){const s=_liveStore[id]||{};const name=s.name||'',icon=s.stream_icon||'';S.currentPlayer={type:'live',id,name,icon};openPlayer(name);loadHls(document.getElementById('player-video'),`/api/hls-live?u=${enc(S.creds.username)}&p=${enc(S.creds.password)}&id=${id}`);updateFavBtn();}
+async function playLive(id){
+  if(!await preparePlaybackMode('main'))return;
+  const s=_liveStore[id]||{};const name=s.name||'',icon=s.stream_icon||'';
+  S.currentPlayer={type:'live',id,name,icon};
+  openPlayer(name);
+  loadHls(document.getElementById('player-video'),`/api/hls-live?u=${enc(S.creds.username)}&p=${enc(S.creds.password)}&id=${id}`);
+  updateFavBtn();
+}
 async function openLiveDetail(id){
   const s=_liveStore[id]||{};
   const name=s.name||'',icon=s.stream_icon||'';
@@ -1076,9 +1103,11 @@ async function openLiveDetail(id){
     epgEl.innerHTML=`<div class="live-epg-now"><span class="live-epg-label">Ahora</span><div class="live-epg-prog">${esc(cur.title)}</div>${cur.time?`<div class="live-epg-time">${cur.time}</div>`:''}</div>`+(nxt?`<div class="live-epg-next-block"><span class="live-epg-label">A continuación</span><div class="live-epg-prog">${esc(nxt.title)}</div>${nxt.time?`<div class="live-epg-time">${nxt.time}</div>`:''}</div>`:'');
   }catch{const el=document.getElementById('live-detail-epg');if(el)el.innerHTML='';}
 }
-function addLiveToMv(id){
+async function addLiveToMv(id){
   closeModal();
-  showSection('multiview');
+  // enterMultiview() ejecuta preparePlaybackMode('multiview') una sola vez.
+  // selectMvChannel comprueba _playbackMode==='multiview' y retorna inmediatamente (sin segunda espera).
+  if(!await enterMultiview())return;
   const maxSlots=S.mvLayout||2;
   let targetSlot=0;
   for(let i=0;i<maxSlots;i++){if(!S.mvChannels[i]){targetSlot=i;break;}}
@@ -1147,7 +1176,13 @@ async function openMovieDetail(id){
   }
 }
 function playMovieById(id){const m=_movieStore[id];if(m)playMovie(m.stream_id,m.name,m.stream_icon||'',m.container_extension||'mp4');closeModal();}
-function playMovie(id,name,icon,ext,resumePos){S.currentPlayer={type:'movie',id,name,icon,ext};openPlayer(name);loadVod(document.getElementById('player-video'),`/api/vod-resolve?u=${enc(S.creds.username)}&p=${enc(S.creds.password)}&id=${id}&ext=${ext||'mp4'}`,resumePos||0);updateFavBtn();}
+async function playMovie(id,name,icon,ext,resumePos){
+  if(!await preparePlaybackMode('main'))return;
+  S.currentPlayer={type:'movie',id,name,icon,ext};
+  openPlayer(name);
+  loadVod(document.getElementById('player-video'),`/api/vod-resolve?u=${enc(S.creds.username)}&p=${enc(S.creds.password)}&id=${id}&ext=${ext||'mp4'}`,resumePos||0);
+  updateFavBtn();
+}
 
 // ── SERIES ──
 function renderSeries(){
@@ -1212,7 +1247,13 @@ function playSeriesEpisode(epId,resumePos){
   playEpisode(epId,ep.name,ep.stream_icon,ep.container_extension||'mp4',pos,ep._seriesId,ep._seriesName);
   closeModal();
 }
-function playEpisode(id,name,cover,ext,resumePos,seriesId,seriesName){S.currentPlayer={type:'series',id,name,icon:cover,ext,seriesId:seriesId||null,seriesName:seriesName||name};openPlayer(seriesName||name);loadVod(document.getElementById('player-video'),`/api/vod-resolve?u=${enc(S.creds.username)}&p=${enc(S.creds.password)}&id=${id}&ext=${ext||'mp4'}&type=series`,resumePos||0);updateFavBtn();}
+async function playEpisode(id,name,cover,ext,resumePos,seriesId,seriesName){
+  if(!await preparePlaybackMode('main'))return;
+  S.currentPlayer={type:'series',id,name,icon:cover,ext,seriesId:seriesId||null,seriesName:seriesName||name};
+  openPlayer(seriesName||name);
+  loadVod(document.getElementById('player-video'),`/api/vod-resolve?u=${enc(S.creds.username)}&p=${enc(S.creds.password)}&id=${id}&ext=${ext||'mp4'}&type=series`,resumePos||0);
+  updateFavBtn();
+}
 
 // ── SEARCH ──
 function setFilter(f,btn){S.searchFilter=f;document.querySelectorAll('.search-filter-btn').forEach(b=>b.classList.remove('active'));btn.classList.add('active');doSearch();}
@@ -1249,11 +1290,138 @@ let _stallWatchdog=null;
 let _retryTid=null;       // setTimeout del único retry permitido por apertura de canal
 let _lastFragTime=0;      // Date.now() del último fragmento HLS cargado (para watchdog)
 
+// ── EXCLUSIÓN MUTUA ──
+let _playbackGeneration=0;          // contador monotónico — invalida transiciones obsoletas
+let _playbackMode='none';           // 'none' | 'main' | 'multiview'
+const RELEASE_WAIT_MS=6000;         // espera post-cierre; única constante (rango 5–8 s)
+
 // Progress persistence
 function _saveProgress(type,id,pos,dur){try{const k='teutv_progress',all=JSON.parse(localStorage.getItem(k)||'{}');all[type+'_'+id]={pos:Math.floor(pos),dur:Math.floor(dur),ts:Date.now()};localStorage.setItem(k,JSON.stringify(all));}catch(e){}}
 function _getProgress(type,id){try{const all=JSON.parse(localStorage.getItem('teutv_progress')||'{}');return all[type+'_'+id]||null;}catch{return null;}}
 function _clearProgress(type,id){try{const all=JSON.parse(localStorage.getItem('teutv_progress')||'{}');delete all[type+'_'+id];localStorage.setItem('teutv_progress',JSON.stringify(all));}catch{}}
 function _fmtTime(s){const m=Math.floor(s/60),sec=Math.floor(s%60);return m+':'+(sec<10?'0':'')+sec;}
+
+// ── DETECTORES DE REPRODUCCIÓN ACTIVA ──
+function _hasMainPlayback(){
+  // _hls vivo = stream activo; _retryTid vivo = retry pendiente que abrirá sesión IPTV
+  return _hls!==null||_retryTid!==null;
+}
+function _hasMultiviewPlayback(){
+  // Alguna instancia HLS activa, o algún timer que creará una pronto
+  return S.mvHls.some(h=>h!==null)||Object.values(_mvTimers).some(t=>t!==null);
+}
+
+// ── STOP IDEMPOTENTE — PLAYER PRINCIPAL ──
+function _stopMainPlayer(){
+  _vodToken++;
+  _cancelRetry();
+  _stopStallWatchdog();
+  if(_progressTimer){clearInterval(_progressTimer);_progressTimer=null;}
+  if(_hls){_hls.stopLoad();try{_hls.detachMedia();}catch(_){}  _hls.destroy();_hls=null;}
+  const v=document.getElementById('player-video');
+  if(v){v.pause();v.removeAttribute('src');v.load();}
+  _lastFragTime=0;
+  S.currentPlayer=null;
+}
+
+// ── STOP IDEMPOTENTE — MULTIVIEW ──
+// Reemplaza la lógica de _suspendMvHls(); preserva S.mvChannels para re-render posterior.
+function _stopAllMultiviewStreams(){
+  // 1. Cancelar todos los timers (sched, stall, auto, y el numérico de slot)
+  Object.keys(_mvTimers).forEach(k=>{
+    if(_mvTimers[k]){
+      (k.includes('stall')||k.includes('auto'))?clearInterval(_mvTimers[k]):clearTimeout(_mvTimers[k]);
+      _mvTimers[k]=null;
+    }
+  });
+  // 2. Poner null ANTES de destroy para invalidar _hardTimer closures en vuelo
+  //    (_hardTimer comprueba S.mvHls[slot]!==h y retorna si es distinto)
+  const snapshot=S.mvHls.slice();
+  S.mvHls=S.mvChannels.map(()=>null);
+  snapshot.forEach(h=>{if(h){try{h.stopLoad();}catch(_){}try{h.detachMedia();}catch(_){}try{h.destroy();}catch(_){}}});
+  // 3. Liberar video elements y limpiar DOM
+  //    grid.innerHTML='' invalida _schedMvStart pendientes (su guarda querySelector falla)
+  const grid=document.getElementById('mv-grid');
+  if(grid){
+    grid.querySelectorAll('video').forEach(v=>{v.pause();v.removeAttribute('src');v.load();});
+    grid.innerHTML='';
+  }
+  S.mvAudioSlot=-1;
+  // S.mvChannels se preserva intencionalmente para re-render posterior
+}
+
+// ── CONTROLADOR DE EXCLUSIÓN MUTUA ──
+async function preparePlaybackMode(targetMode){
+  // Ajuste 2: modo ya activo → retorno inmediato sin incrementar generación
+  if(_playbackMode===targetMode)return true;
+
+  _playbackGeneration++;
+  const generation=_playbackGeneration;
+
+  // Detectar si hay reproducción activa del lado opuesto ANTES de detenerla
+  let needsWait=false;
+  if(targetMode==='main'){
+    needsWait=_hasMultiviewPlayback();
+    _stopAllMultiviewStreams();
+  }else if(targetMode==='multiview'){
+    needsWait=_hasMainPlayback();
+    _stopMainPlayer();
+  }else{ // 'none'
+    needsWait=_hasMainPlayback()||_hasMultiviewPlayback();
+    _stopMainPlayer();
+    _stopAllMultiviewStreams();
+  }
+
+  if(needsWait){
+    _showReleasingOverlay(true);
+    await new Promise(r=>setTimeout(r,RELEASE_WAIT_MS));
+    // Solo la generación vigente oculta el overlay (ajuste 4)
+    if(generation!==_playbackGeneration){
+      return false; // NO ocultar: la nueva transición es dueña del overlay
+    }
+    _showReleasingOverlay(false);
+  }
+
+  // Verificar generación una vez más tras la espera
+  if(generation!==_playbackGeneration)return false;
+
+  // Verificar que el modo opuesto esté realmente vacío (ajuste 10)
+  if(targetMode==='main'      &&_hasMultiviewPlayback())return false;
+  if(targetMode==='multiview' &&_hasMainPlayback())     return false;
+
+  _playbackMode=targetMode;
+  return true;
+}
+
+// ── OVERLAY DE ESPERA ──
+// Hijo directo de <body> (ajuste 5) — visible en cualquier pantalla activa
+function _showReleasingOverlay(visible){
+  let el=document.getElementById('releasing-overlay');
+  if(!el)return; // el div vive en el HTML; si no existe, ignorar
+  el.style.display=visible?'flex':'none';
+}
+
+// ── ENTRAR A MULTIVIEW ──
+// Función async específica para la transición a multiview (ajuste 8).
+// showSection permanece síncrona y delega aquí para la rama multiview.
+async function enterMultiview(){
+  if(!await preparePlaybackMode('multiview'))return false;
+  const content=document.getElementById('main-content');
+  const mv=document.getElementById('view-multiview');
+  const appEl=document.getElementById('screen-app');
+  content.style.display='none';
+  mv.style.display='flex';
+  appEl.classList.add('mv-active');
+  // Sincronizar topbar
+  document.getElementById('topbar-back').classList.add('visible');
+  document.getElementById('topbar-title').classList.add('visible');
+  document.getElementById('topbar-title').textContent='Multiview';
+  const mb=document.getElementById('mobile-breadcrumb');
+  const ml=document.getElementById('mobile-sec-label');
+  if(mb)mb.style.display='';if(ml)ml.textContent='Multiview';
+  renderMultiview();
+  return true;
+}
 
 function openPlayer(title){_suspendMvHls();document.getElementById('screen-app').classList.remove('active');document.getElementById('screen-player').classList.add('active');document.getElementById('player-title').textContent=title;document.getElementById('player-loading').style.display='flex';}
 function _stopStallWatchdog(){if(_stallWatchdog){clearInterval(_stallWatchdog);_stallWatchdog=null;}}
@@ -1299,15 +1467,10 @@ function closePlayer(){
   if(S.currentPlayer&&v.currentTime>5&&v.duration&&(v.currentTime/v.duration)<0.92){
     _saveProgress(S.currentPlayer.type,S.currentPlayer.id,v.currentTime,v.duration);
   }
-  _vodToken++; // invalidate any pending error/loadedmetadata listeners before touching src
-  _cancelRetry(); // cancelar retry pendiente antes de tocar el DOM/video
+  _stopMainPlayer(); // detiene _hls, retries, watchdog, progressTimer, libera src
+  _playbackMode='none';
   document.getElementById('screen-player').classList.remove('active');
   document.getElementById('screen-app').classList.add('active');
-  v.pause();
-  _stopStallWatchdog();
-  if(_progressTimer){clearInterval(_progressTimer);_progressTimer=null;}
-  if(_hls){_hls.destroy();_hls=null;}
-  v.removeAttribute('src');v.load(); // removeAttribute+load() libera la sesión IPTV
 }
 function showPlayerError(msg){
   const loading=document.getElementById('player-loading');
@@ -1854,7 +2017,9 @@ function mvSelectAudio(slot){
     if(btn)btn.innerHTML=active?'<i class="fa-solid fa-volume-high"></i>':'<i class="fa-solid fa-volume-xmark"></i>';
   }
 }
-function _rebuildMvSlot(slot){
+async function _rebuildMvSlot(slot){
+  // Retorna inmediatamente si multiview ya está autorizado (ajuste 2)
+  if(!await preparePlaybackMode('multiview'))return;
   const ch=S.mvChannels[slot];if(!ch)return;
   const cell=document.getElementById(`mv-cell-${slot}`);if(!cell)return;
   // Limpiar todos los timers del slot
@@ -1896,8 +2061,8 @@ function _suspendMvHls(){
   });
   const grid=document.getElementById('mv-grid');
   if(grid){
-    // pause + src='' + load() aborta la descarga activamente (load() es el reset W3C oficial)
-    grid.querySelectorAll('video').forEach(v=>{v.pause();v.src='';v.load();});
+    // pause + removeAttribute('src') + load() aborta la descarga activamente (reset W3C oficial)
+    grid.querySelectorAll('video').forEach(v=>{v.pause();v.removeAttribute('src');v.load();});
     grid.innerHTML=''; // quita elementos del DOM
   }
   S.mvHls.forEach(h=>{if(h)h.destroy();});
@@ -1978,7 +2143,9 @@ function setMvPickerFilter(f,btn){
   btn.classList.add('active');
   _renderMvPickerList(document.getElementById('mv-picker-input').value||'');
 }
-function selectMvChannel(id){
+async function selectMvChannel(id){
+  // preparePlaybackMode retorna true inmediatamente si _playbackMode==='multiview' (ajuste 2/3)
+  if(!await preparePlaybackMode('multiview'))return;
   closeMvPicker();
   const s=_liveStore[id]||{};const name=s.name||'';
   const slot=S.mvSlotTarget;
@@ -2042,7 +2209,22 @@ async function refreshPlaylist(row){
 function toggleNotifications(btn){if(Notification.permission==='granted'){btn.classList.remove('on');showToast('Desactiva en config del navegador');}else Notification.requestPermission().then(p=>{btn.classList.toggle('on',p==='granted');showToast(p==='granted'?'Notificaciones activadas':'Permiso denegado');});}
 
 // ── LOGOUT ──
-function logout(){if(!confirm('¿Cerrar sesión?'))return;localStorage.removeItem('teutv_creds');S.creds=null;document.getElementById('screen-app').classList.remove('active');document.getElementById('screen-login').classList.add('active');document.getElementById('inp-user').value='';document.getElementById('inp-pass').value='';document.getElementById('login-err').style.display='none';}
+function logout(){
+  if(!confirm('¿Cerrar sesión?'))return;
+  // Ajuste 6: invalidar toda transición en vuelo ANTES de limpiar
+  ++_playbackGeneration;
+  _playbackMode='none';
+  _stopMainPlayer();
+  _stopAllMultiviewStreams();
+  _showReleasingOverlay(false); // por si quedó visible de una transición abortada
+  localStorage.removeItem('teutv_creds');
+  S.creds=null;
+  document.getElementById('screen-app').classList.remove('active');
+  document.getElementById('screen-login').classList.add('active');
+  document.getElementById('inp-user').value='';
+  document.getElementById('inp-pass').value='';
+  document.getElementById('login-err').style.display='none';
+}
 
 // ── TOAST ──
 let _tt;
