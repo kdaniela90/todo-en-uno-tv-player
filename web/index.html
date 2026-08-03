@@ -1318,6 +1318,10 @@ function loadHls(videoEl,url){
   _vodToken++;
   const myToken=_vodToken;
   if(_hls){_hls.destroy();_hls=null;}
+  // Resetear el elemento <video> inmediatamente para cerrar la sesión IPTV activa
+  // antes de abrir la nueva. Sin esto el browser mantiene la conexión CDN→media server
+  // abierta y IPTV puede ver dos sesiones simultáneas al cambiar canal rápido.
+  videoEl.pause();videoEl.src='';videoEl.load();
   if(_progressTimer){clearInterval(_progressTimer);_progressTimer=null;}
   _stopStallWatchdog();
   _doLoadHls(videoEl,url,myToken,0);
