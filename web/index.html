@@ -902,6 +902,23 @@ function startApp(){
   document.getElementById('set-expiry-val').textContent=_fmtExpDate(S.creds.userInfo?.exp_date);
   if(typeof Notification!=='undefined'&&Notification.permission==='granted'){const nt=document.getElementById('notif-toggle');if(nt)nt.classList.add('on');}
   fetchAllData();showSection('hub');
+  _refreshUserInfo(); // actualizar fecha de vencimiento en segundo plano
+}
+// Refresca user_info desde la API sin interrumpir la sesión.
+// El exp_date guardado en localStorage puede estar desactualizado si el proveedor
+// renovó la cuenta después del último login.
+async function _refreshUserInfo(){
+  try{
+    const r=await fetch(`/xtream-api/player_api.php?username=${enc(S.creds.username)}&password=${enc(S.creds.password)}`);
+    if(!r.ok)return;
+    const data=await r.json();
+    if(!data.user_info||data.user_info.auth===0)return;
+    S.creds.userInfo=data.user_info;
+    localStorage.setItem('teutv_creds',JSON.stringify(S.creds));
+    // Actualizar el campo visible si el usuario está en Ajustes
+    const el=document.getElementById('set-expiry-val');
+    if(el)el.textContent=_fmtExpDate(data.user_info.exp_date);
+  }catch(_){}
 }
 
 // ── API ──
