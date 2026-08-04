@@ -649,7 +649,7 @@ button:focus:not(:focus-visible),
         </div>
         <div class="hub-card" onclick="showSection('multiview')">
           <div class="hub-card-icon ic-multi"><i class="fa-solid fa-table-cells-large"></i></div>
-          <div><div class="hub-card-title">Multiview</div><div class="hub-card-desc">Hasta 2 canales a la vez</div></div>
+          <div><div class="hub-card-title">Multiview</div><div class="hub-card-desc">Hasta 4 canales a la vez</div></div>
         </div>
       </div>
       <div class="app-footer">
@@ -1368,10 +1368,6 @@ let _vodResolvingToken=null; // token de la invocación activa durante fetch(vod
                              // null = sin fetch en vuelo; valor = generación propietaria
                              // _hasMainPlayback() lo consulta para cubrir la ventana entre
                              // fetch(resolveUrl) y videoEl.src=json.url
-let _vodActiveToken=null;    // token de la invocación VOD activa durante reproducción
-                             // set en _onMeta (loadedmetadata + token vigente); null en
-                             // _stopMainPlayer (autoritativo) y todos los caminos de
-                             // error/timeout — cubre la ventana post-loadedmetadata
 
 // ── EXCLUSIÓN MUTUA ──
 let _playbackGeneration=0;          // contador monotónico — invalida transiciones obsoletas
@@ -1386,13 +1382,14 @@ function _fmtTime(s){const m=Math.floor(s/60),sec=Math.floor(s%60);return m+':'+
 
 // ── DETECTORES DE REPRODUCCIÓN ACTIVA ──
 function _hasMainPlayback(){
-  return (
+  if(
     _hls!==null||
     _retryTid!==null||
     _vodResolvingToken!==null||
-    _vodTimeoutTid!==null||
-    _vodActiveToken!==null
-  );
+    _vodTimeoutTid!==null
+  )return true;
+  const v=document.getElementById('player-video');
+  return !!(v&&(v.currentSrc||v.getAttribute('src')));
 }
 function _hasMultiviewPlayback(){
   // Alguna instancia HLS activa, o algún timer que creará una pronto
@@ -1405,7 +1402,6 @@ function _stopMainPlayer(){
   _cancelRetry();
   if(_vodTimeoutTid){clearTimeout(_vodTimeoutTid);_vodTimeoutTid=null;}
   _vodResolvingToken=null;  // invalida cualquier fetch VOD en vuelo
-  _vodActiveToken=null;     // invalida cualquier reproducción VOD activa (autoritativo)
   _stopStallWatchdog();
   if(_progressTimer){clearInterval(_progressTimer);_progressTimer=null;}
   if(_hls){_hls.stopLoad();try{_hls.detachMedia();}catch(_){}  _hls.destroy();_hls=null;}
@@ -1766,7 +1762,6 @@ function _doLoadVod(videoEl,resolveUrl,resumePos,myToken){
     if(_vodOnMeta===_onMeta)_vodOnMeta=null;
     if(_vodOnErr===_onErr)_vodOnErr=null;
     if(myToken!==_vodToken)return;
-    _vodActiveToken=myToken;  // activar DESPUÉS de verificar token — loadedmetadata obsoleto no puede reactivarlo
     _hasLoaded=true;
     if(loading)loading.style.display='none';
     if(resumePos&&resumePos>0)videoEl.currentTime=resumePos;
@@ -1783,7 +1778,6 @@ function _doLoadVod(videoEl,resolveUrl,resumePos,myToken){
     videoEl.removeEventListener('error',_onErr);
     if(_vodOnMeta===_onMeta)_vodOnMeta=null;
     if(_vodOnErr===_onErr)_vodOnErr=null;
-    if(_vodActiveToken===myToken)_vodActiveToken=null;  // limpiar por identidad antes de guard
     if(myToken!==_vodToken)return;
     if(_hasLoaded)return;
     const code=videoEl.error?videoEl.error.code:0;
@@ -1828,7 +1822,6 @@ function _doLoadVod(videoEl,resolveUrl,resumePos,myToken){
       if(myToken!==_vodToken)return;
       if(json.error){
         if(_vodResolvingToken===myToken)_vodResolvingToken=null;
-        if(_vodActiveToken===myToken)_vodActiveToken=null;  // defensivo — normalmente null aquí
         videoEl.removeEventListener('loadedmetadata',_onMeta);
         videoEl.removeEventListener('error',_onErr);
         if(_vodOnMeta===_onMeta)_vodOnMeta=null;
@@ -1846,7 +1839,6 @@ function _doLoadVod(videoEl,resolveUrl,resumePos,myToken){
       }
       if(!json.url){
         if(_vodResolvingToken===myToken)_vodResolvingToken=null;
-        if(_vodActiveToken===myToken)_vodActiveToken=null;  // defensivo — normalmente null aquí
         videoEl.removeEventListener('loadedmetadata',_onMeta);
         videoEl.removeEventListener('error',_onErr);
         if(_vodOnMeta===_onMeta)_vodOnMeta=null;
@@ -1864,7 +1856,6 @@ function _doLoadVod(videoEl,resolveUrl,resumePos,myToken){
         const firedTid=myTimeoutTid;         // ID real capturado al disparar
         myTimeoutTid=null;
         if(_vodTimeoutTid===firedTid)_vodTimeoutTid=null;  // solo nular si sigue siendo nuestro
-        if(_vodActiveToken===myToken)_vodActiveToken=null;  // limpiar por identidad antes de guard
         if(myToken!==_vodToken)return;
         if(_hasLoaded)return;
         // Log seguro: etiqueta de ruta — sin pathname, query, usuario, contraseña ni token
@@ -1889,7 +1880,6 @@ function _doLoadVod(videoEl,resolveUrl,resumePos,myToken){
     .catch(e=>{
       if(myToken!==_vodToken)return;  // _stopMainPlayer ya limpió _vodResolvingToken
       if(_vodResolvingToken===myToken)_vodResolvingToken=null;
-      if(_vodActiveToken===myToken)_vodActiveToken=null;  // defensivo — normalmente null aquí
       _clearMyTimeout();
       videoEl.removeEventListener('loadedmetadata',_onMeta);
       videoEl.removeEventListener('error',_onErr);
