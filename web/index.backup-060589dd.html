@@ -1361,13 +1361,6 @@ let _progressTimer=null;
 let _stallWatchdog=null;
 let _retryTid=null;       // setTimeout del único retry permitido por apertura de canal
 let _lastFragTime=0;      // Date.now() del último fragmento HLS cargado (para watchdog)
-let _vodTimeoutTid=null;  // setTimeout del timeout de 18s — referencia global (cancelable por _stopMainPlayer)
-let _vodOnMeta=null;      // listener loadedmetadata activo de _doLoadVod — limpieza al cambiar VOD
-let _vodOnErr=null;       // listener error activo de _doLoadVod — limpieza al cambiar VOD
-let _vodResolvingToken=null; // token de la invocación activa durante fetch(vod-resolve)
-                             // null = sin fetch en vuelo; valor = generación propietaria
-                             // _hasMainPlayback() lo consulta para cubrir la ventana entre
-                             // fetch(resolveUrl) y videoEl.src=json.url
 
 // ── EXCLUSIÓN MUTUA ──
 let _playbackGeneration=0;          // contador monotónico — invalida transiciones obsoletas
@@ -1382,14 +1375,8 @@ function _fmtTime(s){const m=Math.floor(s/60),sec=Math.floor(s%60);return m+':'+
 
 // ── DETECTORES DE REPRODUCCIÓN ACTIVA ──
 function _hasMainPlayback(){
-  if(
-    _hls!==null||
-    _retryTid!==null||
-    _vodResolvingToken!==null||
-    _vodTimeoutTid!==null
-  )return true;
-  const v=document.getElementById('player-video');
-  return !!(v&&(v.currentSrc||v.getAttribute('src')));
+  // _hls vivo = stream activo; _retryTid vivo = retry pendiente que abrirá sesión IPTV
+  return _hls!==null||_retryTid!==null;
 }
 function _hasMultiviewPlayback(){
   // Alguna instancia HLS activa, o algún timer que creará una pronto
@@ -1400,18 +1387,11 @@ function _hasMultiviewPlayback(){
 function _stopMainPlayer(){
   _vodToken++;
   _cancelRetry();
-  if(_vodTimeoutTid){clearTimeout(_vodTimeoutTid);_vodTimeoutTid=null;}
-  _vodResolvingToken=null;  // invalida cualquier fetch VOD en vuelo
   _stopStallWatchdog();
   if(_progressTimer){clearInterval(_progressTimer);_progressTimer=null;}
   if(_hls){_hls.stopLoad();try{_hls.detachMedia();}catch(_){}  _hls.destroy();_hls=null;}
   const v=document.getElementById('player-video');
-  if(v){
-    // Remover listeners VOD ANTES de resetear src — evita que v.load() dispare _onErr obsoleto
-    if(_vodOnMeta){v.removeEventListener('loadedmetadata',_vodOnMeta);_vodOnMeta=null;}
-    if(_vodOnErr){v.removeEventListener('error',_vodOnErr);_vodOnErr=null;}
-    v.pause();v.removeAttribute('src');v.load();
-  }
+  if(v){v.pause();v.removeAttribute('src');v.load();}
   _lastFragTime=0;
   S.currentPlayer=null;
 }
@@ -1719,11 +1699,6 @@ function loadVod(videoEl,url,resumePos){
 }
 function _doLoadVod(videoEl,resolveUrl,resumePos,myToken){
   if(myToken!==_vodToken)return;
-
-  // Limpiar listeners previos — evitar acumulación sobre el mismo elemento <video>
-  if(_vodOnMeta){videoEl.removeEventListener('loadedmetadata',_vodOnMeta);_vodOnMeta=null;}
-  if(_vodOnErr){videoEl.removeEventListener('error',_vodOnErr);_vodOnErr=null;}
-
   const loading=document.getElementById('player-loading');
   const errEl=document.getElementById('player-error-msg');
   if(loading){loading.style.display='flex';loading.querySelector('.player-spinner').style.display='block';}
@@ -1741,157 +1716,73 @@ function _doLoadVod(videoEl,resolveUrl,resumePos,myToken){
     },15000);
   }
 
-  let _hasLoaded=false;
-
-  // Handle de timeout POR INVOCACIÓN — garantiza que _clearMyTimeout() en un listener
-  // obsoleto no cancele el timer de la generación nueva.
-  // _clearMyTimeout() compara por identidad antes de nular _vodTimeoutTid (ref. global).
-  let myTimeoutTid=null;
-  function _clearMyTimeout(){
-    if(myTimeoutTid){
-      clearTimeout(myTimeoutTid);
-      if(_vodTimeoutTid===myTimeoutTid)_vodTimeoutTid=null;
-      myTimeoutTid=null;
-    }
-  }
-
-  const _onMeta=function(){
-    _clearMyTimeout();
-    videoEl.removeEventListener('loadedmetadata',_onMeta);
-    videoEl.removeEventListener('error',_onErr);
-    if(_vodOnMeta===_onMeta)_vodOnMeta=null;
-    if(_vodOnErr===_onErr)_vodOnErr=null;
-    if(myToken!==_vodToken)return;
-    _hasLoaded=true;
+  function _beginPlay(){
     if(loading)loading.style.display='none';
     if(resumePos&&resumePos>0)videoEl.currentTime=resumePos;
     videoEl.play().catch(()=>{});
     _startProgress();
-  };
+  }
 
-  // _onErr NO oculta player-loading antes de showPlayerError.
-  // player-error-msg es hijo de player-loading: ocultar el padre deja el error invisible.
-  // showPlayerError() gestiona el overlay correctamente.
-  const _onErr=function(){
-    _clearMyTimeout();
-    videoEl.removeEventListener('loadedmetadata',_onMeta);
-    videoEl.removeEventListener('error',_onErr);
-    if(_vodOnMeta===_onMeta)_vodOnMeta=null;
-    if(_vodOnErr===_onErr)_vodOnErr=null;
-    if(myToken!==_vodToken)return;
-    if(_hasLoaded)return;
-    const code=videoEl.error?videoEl.error.code:0;
-    if(code===4){
-      showPlayerError('No se pudo cargar el video ('+code+'). El servidor puede estar ocupado o el contenido no está disponible temporalmente.');
-    }else if(code===3){
-      showPlayerError('Formato de video no compatible ('+code+'). Prueba en Chrome o en la app móvil.');
-    }else if(code===2){
-      showPlayerError('Error de red al cargar el video ('+code+'). Verifica tu internet e intenta de nuevo.');
-    }else{
-      showPlayerError('No se pudo cargar el video'+(code?(' ('+code+')'):'')+'.');
-    }
-  };
-
-  videoEl.addEventListener('loadedmetadata',_onMeta);
-  videoEl.addEventListener('error',_onErr);
-  _vodOnMeta=_onMeta;
-  _vodOnErr=_onErr;
-
-  // Marcar fetch en vuelo — _hasMainPlayback() devuelve true durante toda la FASE 1.
-  // Evita que preparePlaybackMode('multiview'/'main') omita _stopMainPlayer() mientras
-  // el fetch está pendiente, lo que podría permitir reproducción simultánea tras resolución.
-  _vodResolvingToken=myToken;
-
-  // FASE 1 — Resolver URL vía Edge Function (Deno).
-  // Devuelve JSON {url:"..."} | {error:"...",code?} — no 302.
-  // Se valida r.ok y Content-Type antes de parsear para distinguir origen del fallo.
+  // Paso 1: vod-resolve devuelve JSON — detecta 401/403 del proveedor ANTES de tocar <video>
+  // Una sola conexión a IPTV (no dos en paralelo)
   fetch(resolveUrl)
-    .then(r=>{
-      if(myToken!==_vodToken)return null;  // _stopMainPlayer ya limpió _vodResolvingToken
-      if(!r.ok){
-        const e=new Error('http:'+r.status);e._httpCode=r.status;throw e;
-      }
-      const ct=r.headers.get('content-type')||'';
-      if(!ct.includes('application/json')&&!ct.includes('text/json')){
-        const e=new Error('content-type:'+ct);e._badCt=ct;throw e;
-      }
-      return r.json();
-    })
+    .then(r=>r.json())
     .then(json=>{
-      if(!json)return;            // token cambió durante first-then; _vodResolvingToken ya nulo
       if(myToken!==_vodToken)return;
+
+      // Error diagnosticado en el servidor — código HTTP real de IPTV
       if(json.error){
-        if(_vodResolvingToken===myToken)_vodResolvingToken=null;
-        videoEl.removeEventListener('loadedmetadata',_onMeta);
-        videoEl.removeEventListener('error',_onErr);
-        if(_vodOnMeta===_onMeta)_vodOnMeta=null;
-        if(_vodOnErr===_onErr)_vodOnErr=null;
+        if(loading)loading.style.display='none';
         if(json.error==='auth'){
-          showPlayerError('Sin autorización ('+json.code+'). Verifica tu cuenta.');
+          // 401/403 confirmado desde IPTV → este SÍ puede ser problema de plan
+          showPlayerError('Acceso denegado ('+json.code+'). El contenido puede no estar incluido en tu plan.');
         }else if(json.error==='notfound'){
-          showPlayerError('El contenido no está disponible (404).');
+          showPlayerError('Contenido no encontrado (404). Puede no estar disponible en tu paquete.');
         }else if(json.error==='timeout'){
-          showPlayerError('El servidor tardó demasiado en responder. Intenta nuevamente.');
+          showPlayerError('El servidor tardó demasiado. Intenta de nuevo en unos segundos.');
         }else{
-          showPlayerError('No se pudo resolver la URL del video ('+json.error+').');
+          showPlayerError('Error del servidor ('+(json.code||'')+'). Intenta de nuevo.');
         }
         return;
       }
+
       if(!json.url){
-        if(_vodResolvingToken===myToken)_vodResolvingToken=null;
-        videoEl.removeEventListener('loadedmetadata',_onMeta);
-        videoEl.removeEventListener('error',_onErr);
-        if(_vodOnMeta===_onMeta)_vodOnMeta=null;
-        if(_vodOnErr===_onErr)_vodOnErr=null;
-        showPlayerError('No se pudo resolver la URL del video.');
+        if(loading)loading.style.display='none';
+        showPlayerError('No se pudo resolver la URL del video. Intenta de nuevo.');
         return;
       }
-      // FASE 2 — URL resuelta: la detección de video nativo toma el relevo de _vodResolvingToken
-      if(_vodResolvingToken===myToken)_vodResolvingToken=null;
-      // Timeout de 18s por invocación.
-      // firedTid captura el ID real de setTimeout en el momento del disparo.
-      // La comparación firedTid===_vodTimeoutTid garantiza que no nulamos la referencia
-      // global si una generación nueva ya asignó su propio timer.
-      myTimeoutTid=setTimeout(()=>{
-        const firedTid=myTimeoutTid;         // ID real capturado al disparar
-        myTimeoutTid=null;
-        if(_vodTimeoutTid===firedTid)_vodTimeoutTid=null;  // solo nular si sigue siendo nuestro
-        if(myToken!==_vodToken)return;
-        if(_hasLoaded)return;
-        // Log seguro: etiqueta de ruta — sin pathname, query, usuario, contraseña ni token
-        const src=videoEl.currentSrc||'';
-        const srcLabel=src.includes('/api/vod-stream')?'/api/vod-stream'
-          :src.includes('/xtream-vod-media')?'/xtream-vod-media'
-          :src.includes('/xtream-media')?'/xtream-media'
-          :src.includes('/xtream-stream-hls')?'/xtream-stream-hls'
-          :'other';
-        const ns=videoEl.networkState,rs=videoEl.readyState;
-        console.warn('[VOD timeout] networkState='+ns+' readyState='+rs+' src='+srcLabel);
+
+      // Paso 2: URL resuelta → HTTPS garantizado (CDN proxy o /api/vod-stream)
+      // Sin Mixed Content, sin segunda conexión IPTV
+      const _onMeta=function(){
         videoEl.removeEventListener('loadedmetadata',_onMeta);
         videoEl.removeEventListener('error',_onErr);
-        if(_vodOnMeta===_onMeta)_vodOnMeta=null;
-        if(_vodOnErr===_onErr)_vodOnErr=null;
-        videoEl.pause();videoEl.removeAttribute('src');videoEl.load();
-        showPlayerError('El servidor de video no comenzó a enviar datos. Intenta nuevamente.');
-      },18000);
-      _vodTimeoutTid=myTimeoutTid;
-      videoEl.src=json.url; // siempre ruta CDN proxy o /api/vod-stream — HTTPS garantizado
+        if(myToken!==_vodToken)return;
+        _beginPlay();
+      };
+      const _onErr=function(){
+        videoEl.removeEventListener('loadedmetadata',_onMeta);
+        videoEl.removeEventListener('error',_onErr);
+        if(myToken!==_vodToken)return;
+        if(loading)loading.style.display='none';
+        const code=videoEl.error?videoEl.error.code:0;
+        if(code===3){
+          // MEDIA_ERR_DECODE: codec/contenedor incompatible con este navegador
+          showPlayerError('Este video usa un formato que la app puede reproducir, pero tu navegador no admite. Prueba en Chrome o en la app móvil.');
+        }else{
+          // code 4 u otro: problema de red, servidor ocupado, conexión interrumpida
+          // NO decir "plan" aquí — el 401/403 ya fue capturado arriba como json.error='auth'
+          showPlayerError('No se pudo cargar el video. El servidor puede estar ocupado o el contenido no está disponible temporalmente.');
+        }
+      };
+      videoEl.addEventListener('loadedmetadata',_onMeta);
+      videoEl.addEventListener('error',_onErr);
+      videoEl.src=json.url;
     })
-    .catch(e=>{
-      if(myToken!==_vodToken)return;  // _stopMainPlayer ya limpió _vodResolvingToken
-      if(_vodResolvingToken===myToken)_vodResolvingToken=null;
-      _clearMyTimeout();
-      videoEl.removeEventListener('loadedmetadata',_onMeta);
-      videoEl.removeEventListener('error',_onErr);
-      if(_vodOnMeta===_onMeta)_vodOnMeta=null;
-      if(_vodOnErr===_onErr)_vodOnErr=null;
-      if(e&&e._httpCode){
-        showPlayerError('Error del servidor al resolver el video (HTTP '+e._httpCode+'). Intenta nuevamente.');
-      }else if(e&&e._badCt){
-        showPlayerError('Respuesta inesperada al resolver el video. Intenta nuevamente.');
-      }else{
-        showPlayerError('Error de conexión al resolver el video. Intenta nuevamente.');
-      }
+    .catch(()=>{
+      if(myToken!==_vodToken)return;
+      if(loading)loading.style.display='none';
+      showPlayerError('Error de conexión. Verifica tu internet e intenta de nuevo.');
     });
 }
 function toggleFullscreen(){
