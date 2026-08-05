@@ -1373,16 +1373,6 @@ let _vodActiveToken=null;    // token de la invocación VOD activa durante repro
                              // _stopMainPlayer (autoritativo) y todos los caminos de
                              // error/timeout — cubre la ventana post-loadedmetadata
 
-// ── VOD FREEZE WATCHDOG ──
-let _vodRecoveryAttempts=0;      // contador de recuperaciones en la reproducción actual
-const MAX_VOD_RECOVERIES=1;      // máximo un auto-recovery por reproducción iniciada por usuario
-let _vodRecoveringToken=null;    // lock de re-entrada por token; null = sin recovery en curso
-let _vodRecoveryCooldownTid=null;// setTimeout post-recovery (10 s); evita retriggering inmediato
-let _vodReleaseTid=null;         // setTimeout del periodo de release (RELEASE_WAIT_MS) en recovery
-let _vodRecoverTimeoutTid=null;  // setTimeout de 18 s para el segundo videoEl.src en recovery
-let _vodFreezeWatchdog=null;     // setInterval de detección de congelamiento (VOD nativo)
-let _vodOnPlayErr=null;          // listener error post-loadedmetadata — ref global para limpieza
-
 // ── EXCLUSIÓN MUTUA ──
 let _playbackGeneration=0;          // contador monotónico — invalida transiciones obsoletas
 let _playbackMode='none';           // 'none' | 'main' | 'multiview'
@@ -1401,9 +1391,7 @@ function _hasMainPlayback(){
     _retryTid!==null||
     _vodResolvingToken!==null||
     _vodTimeoutTid!==null||
-    _vodActiveToken!==null||
-    _vodRecoveringToken!==null||
-    _vodRecoverTimeoutTid!==null
+    _vodActiveToken!==null
   );
 }
 function _hasMultiviewPlayback(){
@@ -1419,19 +1407,13 @@ function _stopMainPlayer(){
   _vodResolvingToken=null;  // invalida cualquier fetch VOD en vuelo
   _vodActiveToken=null;     // invalida cualquier reproducción VOD activa (autoritativo)
   _stopStallWatchdog();
-  _stopVodFreezeWatchdog();
-  if(_vodReleaseTid){clearTimeout(_vodReleaseTid);_vodReleaseTid=null;}
-  if(_vodRecoverTimeoutTid){clearTimeout(_vodRecoverTimeoutTid);_vodRecoverTimeoutTid=null;}
-  if(_vodRecoveryCooldownTid){clearTimeout(_vodRecoveryCooldownTid);_vodRecoveryCooldownTid=null;}
-  _vodRecoveringToken=null;
   if(_progressTimer){clearInterval(_progressTimer);_progressTimer=null;}
   if(_hls){_hls.stopLoad();try{_hls.detachMedia();}catch(_){}  _hls.destroy();_hls=null;}
   const v=document.getElementById('player-video');
   if(v){
-    // Remover listeners VOD ANTES de resetear src — evita que v.load() dispare error obsoleto
+    // Remover listeners VOD ANTES de resetear src — evita que v.load() dispare _onErr obsoleto
     if(_vodOnMeta){v.removeEventListener('loadedmetadata',_vodOnMeta);_vodOnMeta=null;}
     if(_vodOnErr){v.removeEventListener('error',_vodOnErr);_vodOnErr=null;}
-    if(_vodOnPlayErr){v.removeEventListener('error',_vodOnPlayErr);_vodOnPlayErr=null;}
     v.pause();v.removeAttribute('src');v.load();
   }
   _lastFragTime=0;
@@ -1733,20 +1715,6 @@ function loadVod(videoEl,url,resumePos){
   _vodToken++;
   const myToken=_vodToken;
   _cancelRetry(); // cancelar retry de canal en vivo si se abre VOD
-  // ── Limpieza autoritativa del VOD anterior ──
-  if(_vodTimeoutTid){clearTimeout(_vodTimeoutTid);_vodTimeoutTid=null;}
-  _vodResolvingToken=null;
-  _vodActiveToken=null;
-  if(_vodOnMeta){videoEl.removeEventListener('loadedmetadata',_vodOnMeta);_vodOnMeta=null;}
-  if(_vodOnErr){videoEl.removeEventListener('error',_vodOnErr);_vodOnErr=null;}
-  if(_vodOnPlayErr){videoEl.removeEventListener('error',_vodOnPlayErr);_vodOnPlayErr=null;}
-  videoEl.pause();videoEl.removeAttribute('src');videoEl.load();
-  _stopVodFreezeWatchdog();
-  if(_vodReleaseTid){clearTimeout(_vodReleaseTid);_vodReleaseTid=null;}
-  if(_vodRecoverTimeoutTid){clearTimeout(_vodRecoverTimeoutTid);_vodRecoverTimeoutTid=null;}
-  if(_vodRecoveryCooldownTid){clearTimeout(_vodRecoveryCooldownTid);_vodRecoveryCooldownTid=null;}
-  _vodRecoveringToken=null;
-  _vodRecoveryAttempts=0;
   if(_hls){_hls.destroy();_hls=null;}
   if(_progressTimer){clearInterval(_progressTimer);_progressTimer=null;}
   _stopStallWatchdog();
@@ -1804,8 +1772,6 @@ function _doLoadVod(videoEl,resolveUrl,resumePos,myToken){
     if(resumePos&&resumePos>0)videoEl.currentTime=resumePos;
     videoEl.play().catch(()=>{});
     _startProgress();
-    _installVodPlayErrListener(videoEl,resolveUrl,myToken);
-    _startVodFreezeWatchdog(videoEl,resolveUrl,myToken);
   };
 
   // _onErr NO oculta player-loading antes de showPlayerError.
@@ -1819,7 +1785,7 @@ function _doLoadVod(videoEl,resolveUrl,resumePos,myToken){
     if(_vodOnErr===_onErr)_vodOnErr=null;
     if(_vodActiveToken===myToken)_vodActiveToken=null;  // limpiar por identidad antes de guard
     if(myToken!==_vodToken)return;
-    if(_hasLoaded){_requestVodRecovery('startup-err-late',videoEl,resolveUrl,myToken);return;}
+    if(_hasLoaded)return;
     const code=videoEl.error?videoEl.error.code:0;
     if(code===4){
       showPlayerError('No se pudo cargar el video ('+code+'). El servidor puede estar ocupado o el contenido no está disponible temporalmente.');
@@ -1936,172 +1902,6 @@ function _doLoadVod(videoEl,resolveUrl,resumePos,myToken){
       }else{
         showPlayerError('Error de conexión al resolver el video. Intenta nuevamente.');
       }
-    });
-}
-function _failVodRecovery(message,videoEl,myToken,myRecoverTid){
-  if(myToken!==_vodToken)return;  // guard primero — token obsoleto no toca nada
-  if(myRecoverTid!=null){
-    clearTimeout(myRecoverTid);
-    if(_vodRecoverTimeoutTid===myRecoverTid)_vodRecoverTimeoutTid=null;
-  }
-  _stopVodFreezeWatchdog();
-  if(_vodOnPlayErr){videoEl.removeEventListener('error',_vodOnPlayErr);_vodOnPlayErr=null;}
-  if(_vodResolvingToken===myToken)_vodResolvingToken=null;
-  if(_vodRecoveringToken===myToken)_vodRecoveringToken=null;
-  if(_vodActiveToken===myToken)_vodActiveToken=null;
-  if(_progressTimer){clearInterval(_progressTimer);_progressTimer=null;}
-  videoEl.pause();videoEl.removeAttribute('src');videoEl.load();
-  showPlayerError(message);  // token ya verificado en el guard inicial
-}
-function _stopVodFreezeWatchdog(){
-  if(_vodFreezeWatchdog){clearInterval(_vodFreezeWatchdog);_vodFreezeWatchdog=null;}
-}
-function _startVodFreezeWatchdog(videoEl,resolveUrl,myToken){
-  _stopVodFreezeWatchdog();
-  let lastProgressCt=videoEl.currentTime;
-  let lastProgressAt=Date.now();
-  const myWatchdog=setInterval(()=>{
-    if(myToken!==_vodToken){
-      clearInterval(myWatchdog);  // cancela solo su propio intervalo
-      if(_vodFreezeWatchdog===myWatchdog)_vodFreezeWatchdog=null;  // identidad
-      return;
-    }
-    if(videoEl.ended)return;
-    if(videoEl.paused){
-      lastProgressCt=videoEl.currentTime;
-      lastProgressAt=Date.now();
-      return;
-    }
-    if(_vodRecoveringToken!==null)return;
-    if(_vodRecoveryCooldownTid!==null)return;
-    const ct=videoEl.currentTime;
-    if(ct>=lastProgressCt+0.5){lastProgressCt=ct;lastProgressAt=Date.now();return;}
-    if(Date.now()-lastProgressAt<25000)return;
-    try{
-      const buf=videoEl.buffered;
-      for(let i=0;i<buf.length;i++){
-        if(buf.start(i)<=ct+0.1&&buf.end(i)>ct+2)return;
-      }
-    }catch(_){}
-    if(videoEl.readyState>=3)return;
-    const rs=videoEl.readyState,ns=videoEl.networkState;
-    const bufAhead=(()=>{try{const b=videoEl.buffered;for(let i=0;i<b.length;i++){if(b.start(i)<=ct+0.1)return Math.max(0,b.end(i)-ct);}return 0;}catch{return 0;}})();
-    console.warn('[VOD watchdog] freeze ct='+ct.toFixed(1)+'s rs='+rs+' ns='+ns+' bufAhead='+bufAhead.toFixed(1)+'s elapsed='+Math.round((Date.now()-lastProgressAt)/1000)+'s');
-    _requestVodRecovery('watchdog',videoEl,resolveUrl,myToken);
-  },5000);
-  _vodFreezeWatchdog=myWatchdog;
-}
-function _installVodPlayErrListener(videoEl,resolveUrl,myToken){
-  if(_vodOnPlayErr){videoEl.removeEventListener('error',_vodOnPlayErr);_vodOnPlayErr=null;}
-  _vodOnPlayErr=function(){
-    if(myToken!==_vodToken)return;
-    if(_vodRecoveringToken!==null)return;
-    if(_vodRecoveryCooldownTid!==null)return;
-    const code=videoEl.error?videoEl.error.code:0;
-    const rs=videoEl.readyState,ns=videoEl.networkState,ct=videoEl.currentTime;
-    console.warn('[VOD play-err] code='+code+' ct='+ct.toFixed(1)+'s rs='+rs+' ns='+ns);
-    _requestVodRecovery('error',videoEl,resolveUrl,myToken);
-  };
-  videoEl.addEventListener('error',_vodOnPlayErr);
-}
-function _requestVodRecovery(reason,videoEl,resolveUrl,myToken){
-  if(myToken!==_vodToken)return;
-  if(_vodRecoveringToken!==null)return;
-  if(_vodRecoveryCooldownTid!==null)return;
-  if(_vodRecoveryAttempts>=MAX_VOD_RECOVERIES){
-    console.warn('[VOD recovery] max reached reason='+reason);
-    _failVodRecovery('El video se interrumpió y no pudo recuperarse. Vuelve a reproducirlo.',videoEl,myToken,null);
-    return;
-  }
-  _vodRecoveryAttempts++;
-  _vodRecoveringToken=myToken;
-  const savedPos=videoEl.currentTime;
-  const rs=videoEl.readyState,ns=videoEl.networkState;
-  console.warn('[VOD recovery] attempt='+_vodRecoveryAttempts+' reason='+reason+' ct='+savedPos.toFixed(1)+'s rs='+rs+' ns='+ns);
-  _stopVodFreezeWatchdog();
-  if(_vodOnPlayErr){videoEl.removeEventListener('error',_vodOnPlayErr);_vodOnPlayErr=null;}
-  videoEl.pause();videoEl.removeAttribute('src');videoEl.load();
-  const myReleaseTid=setTimeout(()=>{
-    if(_vodReleaseTid===myReleaseTid)_vodReleaseTid=null;
-    if(myToken!==_vodToken){if(_vodRecoveringToken===myToken)_vodRecoveringToken=null;return;}
-    _doVodRecover(videoEl,resolveUrl,savedPos,myToken);
-  },RELEASE_WAIT_MS);
-  _vodReleaseTid=myReleaseTid;
-}
-function _doVodRecover(videoEl,resolveUrl,savedPos,myToken){
-  if(myToken!==_vodToken){if(_vodRecoveringToken===myToken)_vodRecoveringToken=null;return;}
-  _vodResolvingToken=myToken;
-  let _recoverOnMeta=null,_recoverOnErr=null;
-  fetch(resolveUrl)
-    .then(r=>{
-      if(_vodResolvingToken===myToken)_vodResolvingToken=null;
-      if(myToken!==_vodToken){if(_vodRecoveringToken===myToken)_vodRecoveringToken=null;return null;}
-      if(!r.ok){const e=new Error('http:'+r.status);e._httpCode=r.status;throw e;}
-      const ct=r.headers.get('content-type')||'';
-      if(!ct.includes('application/json')&&!ct.includes('text/json')){const e=new Error('ct:'+ct);e._badCt=ct;throw e;}
-      return r.json();
-    })
-    .then(json=>{
-      if(!json){if(_vodRecoveringToken===myToken)_vodRecoveringToken=null;return;}
-      if(myToken!==_vodToken){if(_vodRecoveringToken===myToken)_vodRecoveringToken=null;return;}
-      if(json.error){
-        _failVodRecovery('No se pudo recuperar el video ('+json.error+'). Intenta nuevamente.',videoEl,myToken,null);
-        return;
-      }
-      if(!json.url){
-        _failVodRecovery('No se pudo recuperar la URL del video. Intenta nuevamente.',videoEl,myToken,null);
-        return;
-      }
-      const myRecoverTid=setTimeout(()=>{
-        if(_vodRecoverTimeoutTid===myRecoverTid)_vodRecoverTimeoutTid=null;
-        if(_recoverOnMeta)videoEl.removeEventListener('loadedmetadata',_recoverOnMeta);
-        if(_recoverOnErr)videoEl.removeEventListener('error',_recoverOnErr);
-        console.warn('[VOD recovery] timeout waiting loadedmetadata');
-        _failVodRecovery('El video no respondió al recuperarse. Intenta nuevamente.',videoEl,myToken,null);
-      },18000);
-      _vodRecoverTimeoutTid=myRecoverTid;
-      function _clearRecoverTimeout(){
-        clearTimeout(myRecoverTid);
-        if(_vodRecoverTimeoutTid===myRecoverTid)_vodRecoverTimeoutTid=null;
-      }
-      _recoverOnMeta=function(){
-        _clearRecoverTimeout();
-        videoEl.removeEventListener('loadedmetadata',_recoverOnMeta);
-        videoEl.removeEventListener('error',_recoverOnErr);
-        if(_vodRecoveringToken===myToken)_vodRecoveringToken=null;
-        if(myToken!==_vodToken)return;
-        if(savedPos>0)videoEl.currentTime=savedPos;
-        if(myToken===_vodToken)_vodActiveToken=myToken;
-        videoEl.play().catch(()=>{});
-        const myCooldownTid=setTimeout(()=>{
-          if(_vodRecoveryCooldownTid===myCooldownTid)_vodRecoveryCooldownTid=null;
-        },10000);
-        _vodRecoveryCooldownTid=myCooldownTid;
-        _startVodFreezeWatchdog(videoEl,resolveUrl,myToken);
-        _installVodPlayErrListener(videoEl,resolveUrl,myToken);
-        console.warn('[VOD recovery] success ct='+savedPos.toFixed(1)+'s');
-      };
-      _recoverOnErr=function(){
-        videoEl.removeEventListener('loadedmetadata',_recoverOnMeta);
-        videoEl.removeEventListener('error',_recoverOnErr);
-        console.warn('[VOD recovery] media error after re-src');
-        _failVodRecovery('El video no pudo reanudarse. Intenta nuevamente.',videoEl,myToken,myRecoverTid);
-      };
-      videoEl.addEventListener('loadedmetadata',_recoverOnMeta,{once:true});
-      videoEl.addEventListener('error',_recoverOnErr,{once:true});
-      videoEl.src=json.url;
-    })
-    .catch(e=>{
-      if(_vodResolvingToken===myToken)_vodResolvingToken=null;
-      if(_vodRecoveringToken===myToken&&_vodRecoverTimeoutTid!==null){
-        clearTimeout(_vodRecoverTimeoutTid);_vodRecoverTimeoutTid=null;
-        if(_recoverOnMeta)videoEl.removeEventListener('loadedmetadata',_recoverOnMeta);
-        if(_recoverOnErr)videoEl.removeEventListener('error',_recoverOnErr);
-      }
-      const msg=e&&e._httpCode?'Error al recuperar el video (HTTP '+e._httpCode+'). Intenta nuevamente.'
-        :e&&e._badCt?'Respuesta inesperada al recuperar el video. Intenta nuevamente.'
-        :'Error de conexión al recuperar el video. Intenta nuevamente.';
-      _failVodRecovery(msg,videoEl,myToken,null);
     });
 }
 function toggleFullscreen(){
